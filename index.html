@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sky Ace — Open World Flight Simulator</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- START SCREEN -->
+  <div id="start-screen" class="screen active">
+    <div class="bg-clouds"></div>
+    <div class="bg-sun"></div>
+    <div class="bg-plane">
+      <svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg">
+        <path d="M10 40 L60 30 L120 25 L160 35 L180 38 L160 42 L120 47 L70 45 L60 60 L40 55 Z"
+              fill="#e8eef7" stroke="#1a2c4e" stroke-width="2"/>
+        <path d="M80 30 L100 10 L110 12 L95 32 Z" fill="#c9d4e6" stroke="#1a2c4e" stroke-width="2"/>
+        <circle cx="140" cy="36" r="3" fill="#1a2c4e"/>
+        <circle cx="130" cy="36" r="3" fill="#1a2c4e"/>
+      </svg>
+    </div>
+
+    <div class="start-content">
+      <div class="title-block">
+        <div class="callsign">CALLSIGN — ACE-01</div>
+        <h1 class="game-title">SKY <span class="accent">ACE</span></h1>
+        <div class="subtitle">OPEN WORLD FLIGHT SIMULATOR</div>
+        <div class="hud-line">
+          <span>◢ ALT 12,500 FT</span>
+          <span>◢ HDG 270°</span>
+          <span>◢ KIAS 320</span>
+        </div>
+      </div>
+
+      <div class="menu">
+        <button class="btn primary" id="btn-start">▶ START MISSION</button>
+        <button class="btn" id="btn-leaderboard">★ LEADERBOARD</button>
+        <button class="btn" id="btn-controls">⌨ CONTROLS</button>
+        <button class="btn" id="btn-about">ℹ ABOUT</button>
+      </div>
+
+      <div class="footer-bar">
+        <span>BUILD 1.0 • THREE.JS</span>
+        <span class="blink">● SYSTEMS NOMINAL</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTROLS PANEL -->
+  <div id="controls-screen" class="screen modal">
+    <div class="modal-box">
+      <h2>FLIGHT CONTROLS</h2>
+      <div class="control-grid">
+        <div><kbd>W</kbd> / <kbd>S</kbd></div><div>Pitch Down / Up</div>
+        <div><kbd>A</kbd> / <kbd>D</kbd></div><div>Roll Left / Right</div>
+        <div><kbd>Q</kbd> / <kbd>E</kbd></div><div>Yaw Left / Right</div>
+        <div><kbd>Shift</kbd> / <kbd>Ctrl</kbd></div><div>Throttle Up / Down</div>
+        <div><kbd>Space</kbd></div><div>Boost</div>
+        <div><kbd>C</kbd></div><div>Toggle Camera</div>
+        <div><kbd>R</kbd></div><div>Reset Position</div>
+        <div><kbd>Esc</kbd></div><div>Pause / Menu</div>
+      </div>
+      <button class="btn primary close-modal">CLOSE</button>
+    </div>
+  </div>
+
+  <!-- LEADERBOARD -->
+  <div id="leaderboard-screen" class="screen modal">
+    <div class="modal-box">
+      <h2>★ LEADERBOARD ★</h2>
+      <div class="lb-tabs">
+        <button class="tab active" data-tab="all">OVERALL</button>
+        <button class="tab" data-tab="ring">RING RUN</button>
+        <button class="tab" data-tab="canyon">CANYON DASH</button>
+        <button class="tab" data-tab="bomb">PRECISION DROP</button>
+        <button class="tab" data-tab="dogfight">DOGFIGHT</button>
+      </div>
+      <div id="leaderboard-list" class="leaderboard-list"></div>
+      <div class="lb-actions">
+        <button class="btn" id="btn-clear-lb">CLEAR SCORES</button>
+        <button class="btn primary close-modal">CLOSE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ABOUT -->
+  <div id="about-screen" class="screen modal">
+    <div class="modal-box">
+      <h2>ABOUT</h2>
+      <p>Sky Ace is an open-world flight simulator. Fly between mission markers
+      scattered across the world and trigger minigames by entering their airspace.</p>
+      <ul class="features">
+        <li>◆ <b>Ring Run</b> — fly through floating rings under time pressure.</li>
+        <li>◆ <b>Canyon Dash</b> — weave through canyon obstacles at low altitude.</li>
+        <li>◆ <b>Precision Drop</b> — bomb a marked target from altitude.</li>
+        <li>◆ <b>Dogfight</b> — outmaneuver and shoot down enemy aces.</li>
+      </ul>
+      <p>Scores are ranked: <b>D / C / B / A / S / SS</b>. Top scores are stored locally.</p>
+      <button class="btn primary close-modal">CLOSE</button>
+    </div>
+  </div>
+
+  <!-- PAUSE MENU -->
+  <div id="pause-screen" class="screen modal">
+    <div class="modal-box">
+      <h2>FLIGHT PAUSED</h2>
+      <button class="btn primary" id="btn-resume">▶ RESUME</button>
+      <button class="btn" id="btn-pause-controls">⌨ CONTROLS</button>
+      <button class="btn" id="btn-quit">✕ RETURN TO MENU</button>
+    </div>
+  </div>
+
+  <!-- MINIGAME RESULT -->
+  <div id="result-screen" class="screen modal">
+    <div class="modal-box result-box">
+      <div class="rank-display" id="rank-display">S</div>
+      <h2 id="result-title">MISSION COMPLETE</h2>
+      <div class="result-stats" id="result-stats"></div>
+      <button class="btn primary" id="btn-result-continue">CONTINUE</button>
+    </div>
+  </div>
+
+  <!-- GAME HUD -->
+  <div id="game-hud" class="hidden">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Top HUD -->
+    <div class="hud top-hud">
+      <div class="hud-panel">
+        <div class="hud-label">SPEED</div>
+        <div class="hud-value" id="hud-speed">0</div>
+        <div class="hud-unit">KTS</div>
+      </div>
+      <div class="hud-panel">
+        <div class="hud-label">ALTITUDE</div>
+        <div class="hud-value" id="hud-alt">0</div>
+        <div class="hud-unit">FT</div>
+      </div>
+      <div class="hud-panel">
+        <div class="hud-label">HEADING</div>
+        <div class="hud-value" id="hud-hdg">000</div>
+        <div class="hud-unit">DEG</div>
+      </div>
+      <div class="hud-panel">
+        <div class="hud-label">THROTTLE</div>
+        <div class="hud-bar"><div class="hud-bar-fill" id="hud-throttle"></div></div>
+      </div>
+      <div class="hud-panel score-panel">
+        <div class="hud-label">SCORE</div>
+        <div class="hud-value" id="hud-score">0</div>
+      </div>
+    </div>
+
+    <!-- Crosshair -->
+    <div class="crosshair">
+      <svg viewBox="-50 -50 100 100">
+        <circle cx="0" cy="0" r="30" fill="none" stroke="#00ff88" stroke-width="1" opacity="0.6"/>
+        <line x1="-40" y1="0" x2="-15" y2="0" stroke="#00ff88" stroke-width="1.5"/>
+        <line x1="40" y1="0" x2="15" y2="0" stroke="#00ff88" stroke-width="1.5"/>
+        <line x1="0" y1="-40" x2="0" y2="-15" stroke="#00ff88" stroke-width="1.5"/>
+        <line x1="0" y1="40" x2="0" y2="15" stroke="#00ff88" stroke-width="1.5"/>
+        <circle cx="0" cy="0" r="2" fill="#00ff88"/>
+      </svg>
+    </div>
+
+    <!-- Minimap -->
+    <div class="minimap">
+      <canvas id="minimap-canvas" width="200" height="200"></canvas>
+      <div class="minimap-label">RADAR</div>
+    </div>
+
+    <!-- Minigame overlay -->
+    <div id="minigame-hud" class="minigame-hud hidden">
+      <div class="mg-title" id="mg-title">MINIGAME</div>
+      <div class="mg-stats" id="mg-stats"></div>
+      <div class="mg-objective" id="mg-objective"></div>
+    </div>
+
+    <!-- Mission marker prompt -->
+    <div id="mission-prompt" class="mission-prompt hidden">
+      <div class="mp-title">⚑ MISSION AVAILABLE</div>
+      <div class="mp-name" id="mp-name"></div>
+      <div class="mp-desc" id="mp-desc"></div>
+      <div class="mp-hint">FLY THROUGH MARKER TO START</div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="game.js?v=4"></script>
+</body>
+</html>
