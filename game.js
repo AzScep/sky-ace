@@ -3,10 +3,11 @@
 // =====================================================
 
 import * as THREE from 'three';
-import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=4';
-import { createPlane, PlaneController, Input } from './plane.js?v=4';
-import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=4';
-import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=4';
+import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=5';
+import { createPlane, PlaneController, Input } from './plane.js?v=5';
+import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=5';
+import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=5';
+import { audio } from './audio.js?v=5';
 
 // ----- State -----
 const State = {
@@ -28,6 +29,7 @@ let totalScore = 0;
 let cameraMode = 0;           // 0 = chase, 1 = cockpit, 2 = cinematic
 let lastTime = performance.now();
 let minimapCtx;
+let prevBoost = false;        // for boost-whoosh edge detection
 
 // =====================================================
 // Setup
@@ -172,6 +174,7 @@ function startMinigame(mission) {
   document.getElementById('mg-title').textContent = mission.name;
   document.getElementById('mg-objective').textContent = activeMinigame.objective;
   showToast(`▶ ${mission.name}`);
+  audio.playMusic('music_action');
 }
 
 function endMinigame() {
@@ -198,6 +201,7 @@ function handleFire() {
     activeMinigame.dropBomb(plane.position.clone(), controller.velocity.clone());
   } else if (activeMinigame.mode === 'dogfight') {
     activeMinigame.fireBullet(plane.position.clone(), plane.quaternion.clone());
+    audio.play('cannon', { rate: 0.95 + Math.random() * 0.1 });
   }
 }
 
@@ -228,6 +232,8 @@ function showToast(msg) {
 }
 
 function showResult(mode, score, reason, result) {
+  audio.stopAllMusic(0.5);
+  audio.play('fanfare');
   const el = document.getElementById('result-screen');
   document.getElementById('rank-display').textContent = result.grade;
   document.getElementById('rank-display').className = `rank-display grade-${result.grade}`;
@@ -356,6 +362,30 @@ function drawMinimap() {
 }
 
 // =====================================================
+// Audio — engine drone reacts to speed/throttle; drains minigame SFX
+// =====================================================
+function updateAudio(dt) {
+  if (!audio.ready) return;
+  if (state === State.PLAYING || state === State.MINIGAME) {
+    audio.resume();
+    if (!audio.isLoopActive('engine')) audio.startLoop('engine');
+    const t = THREE.MathUtils.clamp((controller.speed - 30) / (320 - 30), 0, 1);
+    const rate = 0.78 + t * 0.95;
+    const gain = 0.16 + controller.throttle * 0.18 + (controller.boosting ? 0.16 : 0);
+    audio.setLoopParams('engine', gain, rate, 0.12);
+
+    if (controller.boosting && !prevBoost) audio.play('boost');
+    prevBoost = controller.boosting;
+
+    // Sounds emitted from inside minigame logic
+    if (activeMinigame && activeMinigame._sfxQueue && activeMinigame._sfxQueue.length) {
+      for (const s of activeMinigame._sfxQueue) audio.play(s);
+      activeMinigame._sfxQueue.length = 0;
+    }
+  }
+}
+
+// =====================================================
 // Game loop
 // =====================================================
 function loop(now) {
@@ -393,6 +423,7 @@ function loop(now) {
     updateCamera(dt);
     updateHUD();
     drawMinimap();
+    updateAudio(dt);
   }
 
   renderer.render(scene, camera);
@@ -408,15 +439,18 @@ function startGame() {
   lastTime = performance.now();
   controller.reset(new THREE.Vector3(0, 400, 0));
   totalScore = 0;
+  audio.init().then(() => { audio.resume(); audio.stopAllMusic(0.4); });
 }
 
 function togglePause() {
   if (state === State.PLAYING || state === State.MINIGAME) {
     state = State.PAUSED;
     setActiveScreen('pause-screen');
+    audio.suspend();
   } else if (state === State.PAUSED) {
     state = activeMinigame ? State.MINIGAME : State.PLAYING;
     setActiveScreen(null);
+    audio.resume();
   }
 }
 
@@ -426,6 +460,10 @@ function quitToMenu() {
   document.getElementById('game-hud').classList.add('hidden');
   state = State.MENU;
   setActiveScreen('start-screen');
+  audio.resume();
+  audio.stopLoop('engine', 0.2);
+  prevBoost = false;
+  audio.playMusic('music_menu');
 }
 
 function setActiveScreen(id) {
@@ -506,6 +544,44 @@ function wireUI() {
       renderLeaderboard(document.querySelector('.lb-tabs .tab.active').dataset.tab);
     }
   });
+
+  wireAudioUI();
+}
+
+// =====================================================
+// Audio UI — unlock on first gesture, click ticks, mute toggle
+// =====================================================
+function updateMuteUI() {
+  document.querySelectorAll('.btn-mute').forEach(b => {
+    b.classList.toggle('muted', audio.muted);
+    b.textContent = audio.muted ? '🔇' : '🔊';
+    b.title = audio.muted ? 'Sound off (M)' : 'Sound on (M)';
+  });
+}
+
+function wireAudioUI() {
+  // Browsers require a user gesture before audio can start.
+  const unlock = () => {
+    audio.init().then(() => {
+      audio.resume();
+      if (state === State.MENU) audio.playMusic('music_menu');
+      updateMuteUI();
+    });
+  };
+  window.addEventListener('pointerdown', unlock, { once: true });
+  window.addEventListener('keydown', unlock, { once: true });
+
+  // Subtle tick on any button / tab press.
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.btn, .tab, .btn-mute')) audio.click();
+  });
+
+  const toggle = () => { audio.toggleMute(); updateMuteUI(); };
+  document.querySelectorAll('.btn-mute').forEach(b => b.addEventListener('click', toggle));
+  window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'm') { toggle(); }
+  });
+  updateMuteUI();
 }
 
 // =====================================================
@@ -514,3 +590,15 @@ function wireUI() {
 setupScene();
 wireUI();
 loop(performance.now());
+
+// Debug / test hook
+window.__sky = {
+  audio,
+  get state() { return state; },
+  get controller() { return controller; },
+  get plane() { return plane; },
+  get missions() { return missions; },
+  get activeMinigame() { return activeMinigame; },
+  startGame,
+  startMinigame,
+};

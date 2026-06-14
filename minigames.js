@@ -3,7 +3,7 @@
 // =====================================================
 
 import * as THREE from 'three';
-import { terrainHeight, WORLD_SIZE } from './world.js?v=4';
+import { terrainHeight, WORLD_SIZE } from './world.js?v=5';
 
 // Swept ring intersection: did segment p0→p1 cross the disc at (center, normal, radius)?
 function sweptRingHit(p0, p1, center, normal, radius) {
@@ -35,6 +35,7 @@ class Minigame {
     this.done = false;
     this.objective = '';
     this.lastPlanePos = plane.position.clone();
+    this._sfxQueue = [];   // drained by the main loop -> audio.play()
   }
   cleanup() {
     this.scene.remove(this.group);
@@ -186,6 +187,7 @@ export class RingRun extends Minigame {
       this.timeLeft = Math.min(this.timeLeft + 6, 90);
       this.currentRing++;
       this._toast = `+${pts} • RING ${this.currentRing}/${this.rings.length}`;
+      this._sfxQueue.push('chime');
 
       if (this.currentRing >= this.rings.length) {
         this.score += 500;
@@ -284,6 +286,7 @@ export class CanyonDash extends Minigame {
         this.score += 150 + altBonus;
         if (altBonus) this.bonus += altBonus;
         this._toast = altBonus ? `+250 LOW PASS` : `+150 GATE`;
+        this._sfxQueue.push('chime');
         if (this.passedCount === this.gates.length) {
           this.score += 600;
           this.finish('COURSE CLEARED');
@@ -378,6 +381,8 @@ export class PrecisionDrop extends Minigame {
         this.score += points;
         this.hits.push({ dist: distXZ, points });
         this._toast = points > 0 ? `+${points} ${distXZ < 26 ? 'BULLSEYE!' : 'HIT'}` : 'MISS';
+        this._sfxQueue.push('explosion');
+        if (points >= 1000) this._sfxQueue.push('chime');
         // Explosion marker
         const ex = new THREE.Mesh(
           new THREE.SphereGeometry(8, 8, 6),
@@ -534,6 +539,7 @@ export class Dogfight extends Minigame {
             ex.userData.life = 1;
             this.group.add(ex);
             this._toast = `+600 SPLASH ONE!`;
+            this._sfxQueue.push('explosion', 'chime');
             if (this.kills >= this.targetKills) {
               this.score += 1000;
               this.finish('ALL ENEMIES DOWN');

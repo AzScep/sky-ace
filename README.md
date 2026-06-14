@@ -30,6 +30,7 @@ Then open <http://localhost:8000> in any modern browser.
 | `F`            | Fire / Drop bomb      |
 | `C`            | Cycle camera          |
 | `R`            | Reset position        |
+| `M`            | Mute / unmute sound   |
 | `Esc`          | Pause                 |
 
 ## Minigames
@@ -45,14 +46,33 @@ Fly into the colored beams scattered around the map:
 
 Each run is graded **D / C / B / A / S / SS** based on score. Top scores per mode (and overall) are saved to `localStorage` and visible from the menu.
 
+## Sound & art
+
+Build 2.0 adds a full audio layer and cinematic menu art, all generated with
+[Higgsfield](https://higgsfield.ai):
+
+- **Music** — an epic menu theme and a high-energy action theme (play during missions),
+  plus a victory fanfare on the result screen.
+- **SFX** — a reactive jet-engine drone (pitch/volume follow throttle + speed),
+  cannon fire, explosions, afterburner whoosh, and a ring/gate success chime.
+- **Menu key art** — a cinematic fighter-jet backdrop on the start screen.
+
+Audio uses the Web Audio API and unlocks on first interaction (browsers block
+autoplay). Toggle it any time with the on-screen speaker button or the `M` key;
+the preference is saved to `localStorage`.
+
+Generated assets live in `assets/audio/` and `assets/img/`.
+
 ## Files
 
 | File              | Purpose                                          |
 |-------------------|--------------------------------------------------|
 | `index.html`      | Markup, screens, HUD overlays                   |
 | `style.css`       | Aviation-themed UI (Orbitron + Share Tech Mono) |
-| `game.js`         | Main loop, screen state, camera, minimap        |
+| `game.js`         | Main loop, screen state, camera, minimap, audio wiring |
+| `audio.js`        | Web Audio sound manager (music, SFX, engine, mute) |
 | `plane.js`        | Aircraft model + arcade physics + input         |
 | `world.js`        | Terrain (value-noise heightmap), sky, mission markers |
 | `minigames.js`    | The four minigame classes                       |
 | `leaderboard.js`  | localStorage scores + grade thresholds          |
+| `assets/`         | Higgsfield-generated audio + menu art            |
