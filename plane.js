@@ -7,11 +7,13 @@ import * as THREE from 'three';
 export function createPlane() {
   const plane = new THREE.Group();
 
-  const bodyMat = new THREE.MeshPhongMaterial({ color: 0xe5e9f0, shininess: 60 });
-  const accentMat = new THREE.MeshPhongMaterial({ color: 0x00d4ff, shininess: 100 });
-  const darkMat = new THREE.MeshPhongMaterial({ color: 0x1a2c4e });
-  const glassMat = new THREE.MeshPhongMaterial({
-    color: 0x88ccff, transparent: true, opacity: 0.6, shininess: 200,
+  // Neon-jet palette: dark airframe with self-lit cyan trim + magenta canopy
+  // so the plane reads as pure light under the bloom pass.
+  const bodyMat = new THREE.MeshPhongMaterial({ color: 0x1b1140, emissive: 0x0a0820, shininess: 80 });
+  const accentMat = new THREE.MeshBasicMaterial({ color: 0x00ffd5 });           // glowing cyan trim
+  const darkMat = new THREE.MeshPhongMaterial({ color: 0x0d0a22 });
+  const glassMat = new THREE.MeshBasicMaterial({
+    color: 0xff2e88, transparent: true, opacity: 0.7,                            // magenta canopy glow
   });
 
   // Fuselage
@@ -110,7 +112,22 @@ export class PlaneController {
     this.throttleResponse = 0.4;
     this.turnAuthority = 1.6;
 
+    // Player control preferences (driven by the Settings menu).
+    this.invertPitch = false;   // swap pitch-up / pitch-down
+    this.sensitivity = 1;       // scales commanded roll/pitch/yaw rates
+
     this.alive = true;
+
+    // Reusable scratch objects so update() allocates nothing per frame.
+    this._right = new THREE.Vector3();
+    this._up = new THREE.Vector3();
+    this._forward = new THREE.Vector3();
+    this._qPitch = new THREE.Quaternion();
+    this._qYaw = new THREE.Quaternion();
+    this._qRoll = new THREE.Quaternion();
+    this._axisX = new THREE.Vector3(1, 0, 0);
+    this._axisY = new THREE.Vector3(0, 1, 0);
+    this._axisZ = new THREE.Vector3(0, 0, 1);
   }
 
   reset(pos) {
@@ -135,26 +152,28 @@ export class PlaneController {
     this.speed += (targetSpeed - this.speed) * Math.min(1, dt * 0.8);
 
     // ----- Inputs -----
-    const tPitch = (input.pitchUp ? 1 : 0) - (input.pitchDown ? 1 : 0);
+    const pitchSign = this.invertPitch ? -1 : 1;
+    const tPitch = ((input.pitchUp ? 1 : 0) - (input.pitchDown ? 1 : 0)) * pitchSign;
     const tRoll  = (input.rollLeft ? 1 : 0) - (input.rollRight ? 1 : 0);
     const tYaw   = (input.yawLeft  ? 1 : 0) - (input.yawRight  ? 1 : 0);
 
-    // Current orientation basis vectors
-    const right   = new THREE.Vector3(1,0,0).applyQuaternion(this.plane.quaternion);
-    const up      = new THREE.Vector3(0,1,0).applyQuaternion(this.plane.quaternion);
-    const forward = new THREE.Vector3(0,0,1).applyQuaternion(this.plane.quaternion);
+    // Current orientation basis vectors (reuse scratch vectors)
+    const right   = this._right.set(1,0,0).applyQuaternion(this.plane.quaternion);
+    const forward = this._forward.set(0,0,1).applyQuaternion(this.plane.quaternion);
 
     // Bank angle: how much we're rolled. right.y > 0 = banked left.
     const bankSin = right.y;          // -1..1, sin of bank angle
     const noseUpSin = forward.y;      // -1..1, sin of pitch angle
 
     // ----- Rate targets (rad/s) -----
+    // Player sensitivity scales the commanded rates (not the auto-level springs).
+    const s = this.sensitivity;
     // Rolling is snappy (immediate feedback)
-    const rollTarget = tRoll * 2.6;
+    const rollTarget = tRoll * 2.6 * s;
     // Pitch with comfortable rate
-    const pitchTarget = tPitch * 1.4;
+    const pitchTarget = tPitch * 1.4 * s;
     // Rudder yaw (Q/E) is gentle
-    const yawTarget = tYaw * 0.8;
+    const yawTarget = tYaw * 0.8 * s;
 
     // Critical fix: when no roll input, auto-level the wings.
     // Spring-damp the bank angle back to zero.
@@ -176,9 +195,9 @@ export class PlaneController {
     this.yawRate   += (yawTarget - this.yawRate) * Math.min(1, dt * 6);
 
     // Apply rotations in local space (pitch X, yaw Y, roll Z)
-    const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), this.pitchRate * dt);
-    const qYaw   = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), this.yawRate * dt);
-    const qRoll  = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), this.rollRate * dt);
+    const qPitch = this._qPitch.setFromAxisAngle(this._axisX, this.pitchRate * dt);
+    const qYaw   = this._qYaw.setFromAxisAngle(this._axisY, this.yawRate * dt);
+    const qRoll  = this._qRoll.setFromAxisAngle(this._axisZ, this.rollRate * dt);
     this.plane.quaternion.multiply(qPitch).multiply(qYaw).multiply(qRoll);
 
     // Banking induces yaw — this is what makes A/D actually TURN the plane.
@@ -188,7 +207,7 @@ export class PlaneController {
     this.plane.rotateY(turnFromBank * dt);
 
     // Recompute forward after rotation
-    const newForward = new THREE.Vector3(0,0,1).applyQuaternion(this.plane.quaternion);
+    const newForward = this._forward.set(0,0,1).applyQuaternion(this.plane.quaternion);
     this.velocity.copy(newForward).multiplyScalar(this.speed);
     this.plane.position.addScaledVector(this.velocity, dt);
 
@@ -200,7 +219,7 @@ export class PlaneController {
 
   // Public state for HUD
   getHeadingDeg() {
-    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.plane.quaternion);
+    const forward = this._forward.set(0, 0, 1).applyQuaternion(this.plane.quaternion);
     let deg = Math.atan2(forward.x, forward.z) * 180 / Math.PI;
     if (deg < 0) deg += 360;
     return deg;

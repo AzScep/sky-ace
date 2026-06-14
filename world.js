@@ -248,6 +248,7 @@ export function createMissionMarker(color = 0x00ff88) {
   ring.position.y = 5;
   group.add(ring);
   group.userData.ring = ring;
+  group.userData.beam = beam;   // exposed so a cleared mission can dim its beam
 
   group.userData.color = color;
   group.userData.radius = 90;

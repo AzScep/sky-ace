@@ -3,12 +3,16 @@
 // =====================================================
 
 import * as THREE from 'three';
-import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=7';
-import { createPlane, PlaneController, Input } from './plane.js?v=7';
-import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=8';
-import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=7';
-import { audio } from './audio.js?v=7';
-import { FX } from './fx.js?v=7';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=9';
+import { createPlane, PlaneController, Input } from './plane.js?v=9';
+import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=9';
+import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=9';
+import { audio } from './audio.js?v=9';
+import { FX } from './fx.js?v=9';
 
 // ----- State -----
 const State = {
@@ -21,6 +25,8 @@ const State = {
 
 let state = State.MENU;
 let scene, camera, renderer;
+let composer, bloomPass, sunRef;
+let useBloom = true;          // render through the bloom composer (toggle for perf A/B)
 let plane, controller, input;
 let world;
 let missions = [];
@@ -33,6 +39,23 @@ let minimapCtx;
 let fx;                       // particle FX system
 let prevBoost = false;        // for boost-whoosh edge detection
 let shake = 0;                // current camera-shake magnitude
+let reducedMotion = false;       // mirrors settings.reducedMotion for hot paths
+let onboardingActive = false;    // first-run overlay is up → freeze the sim
+
+// ----- Persisted user settings (localStorage: sky_settings) -----
+const DEFAULT_SETTINGS = {
+  invertPitch: false,
+  sensitivity: 1.0,
+  reducedMotion: false,
+  colorblind: false,
+  volume: 0.7,
+};
+let settings = { ...DEFAULT_SETTINGS };
+
+// True while the player is actively in flight (not in a menu/result screen).
+function isFlying() {
+  return state === State.PLAYING || state === State.MINIGAME;
+}
 
 // =====================================================
 // Setup
@@ -46,9 +69,15 @@ function setupScene() {
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x88a8c8);
+  // Reinhard tone mapping keeps additive FX + bloom from clipping to flat white.
+  renderer.toneMapping = THREE.ReinhardToneMapping;
+  renderer.toneMappingExposure = 1.15;
 
   world = buildWorld(scene);
   fx = new FX(scene);
+  sunRef = world.sun;
+
+  setupBloom();
 
   plane = createPlane();
   scene.add(plane);
@@ -56,10 +85,11 @@ function setupScene() {
   controller.reset(new THREE.Vector3(0, 350, 0));
 
   input = new Input();
-  input.onPause = togglePause;
-  input.onCamera = cycleCamera;
-  input.onReset = resetFlight;
-  input.onFire = handleFire;
+  // Gate flight controls so menu/result screens don't react to flight keys.
+  input.onPause = togglePause;  // Esc is valid in PLAYING/MINIGAME/PAUSED (togglePause guards itself)
+  input.onCamera = () => { if (isFlying()) cycleCamera(); };
+  input.onReset  = () => { if (isFlying()) resetFlight(); };
+  input.onFire   = () => { if (isFlying()) handleFire(); };
 
   setupMissions();
 
@@ -69,9 +99,47 @@ function setupScene() {
 }
 
 function onResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(w, h);
+  if (composer) composer.setSize(w, h);
+}
+
+// =====================================================
+// TRUE BLOOM — EffectComposer + RenderPass + UnrealBloomPass
+// Neon emissive elements glow as pure light; the bloom target runs at
+// half resolution (mitigation) so the extra post pass stays in frame budget.
+// =====================================================
+function setupBloom() {
+  const w = window.innerWidth, h = window.innerHeight;
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+
+  // Half-res bloom target: ~4x fewer pixels through the blur mip chain.
+  bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(Math.max(1, w >> 1), Math.max(1, h >> 1)),
+    0.6,    // strength — tuned for realistic base: glow the FX/sun, not the whole scene
+    0.5,    // radius
+    0.8     // threshold — only the brightest highlights bloom; midtones stay crisp
+  );
+  composer.addPass(bloomPass);
+  composer.addPass(new OutputPass());   // tone-map + sRGB after bloom
+  composer.setSize(w, h);
+
+  // The composer runs several internal render() passes per frame; with autoReset
+  // on, renderer.info would only reflect the final pass. Reset manually each
+  // presented frame so renderCalls/renderTris sum the WHOLE frame (scene + bloom).
+  renderer.info.autoReset = false;
+}
+
+// One presentation frame: billboard the sun, then render through the bloom
+// composer (or straight to screen when bloom is toggled off for A/B perf).
+function renderFrame() {
+  renderer.info.reset();
+  if (sunRef) sunRef.lookAt(camera.position);
+  if (useBloom && composer) composer.render();
+  else renderer.render(scene, camera);
 }
 
 function setupMissions() {
@@ -95,38 +163,42 @@ function setupMissions() {
 // =====================================================
 // Camera
 // =====================================================
-function updateCamera(dt) {
-  const planePos = plane.position.clone();
-  const planeQuat = plane.quaternion;
+// Reusable scratch objects (avoid per-frame allocations in the camera loop).
+const _camTarget = new THREE.Vector3();
+const _camLookAt = new THREE.Vector3();
+const _camOffset = new THREE.Vector3();
+const _camFwd = new THREE.Vector3();
 
-  let target = new THREE.Vector3();
-  let lookAt = planePos.clone();
+function updateCamera(dt) {
+  const planePos = plane.position;
+  const planeQuat = plane.quaternion;
 
   if (cameraMode === 0) {
     // Chase
-    const offset = new THREE.Vector3(0, 6, -22).applyQuaternion(planeQuat);
-    target = planePos.clone().add(offset);
-    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(planeQuat).multiplyScalar(20);
-    lookAt = planePos.clone().add(fwd);
+    _camOffset.set(0, 6, -22).applyQuaternion(planeQuat);
+    _camTarget.copy(planePos).add(_camOffset);
+    _camFwd.set(0, 0, 1).applyQuaternion(planeQuat).multiplyScalar(20);
+    _camLookAt.copy(planePos).add(_camFwd);
   } else if (cameraMode === 1) {
     // Cockpit
-    const offset = new THREE.Vector3(0, 0.6, 2.2).applyQuaternion(planeQuat);
-    target = planePos.clone().add(offset);
-    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(planeQuat).multiplyScalar(50);
-    lookAt = target.clone().add(fwd);
+    _camOffset.set(0, 0.6, 2.2).applyQuaternion(planeQuat);
+    _camTarget.copy(planePos).add(_camOffset);
+    _camFwd.set(0, 0, 1).applyQuaternion(planeQuat).multiplyScalar(50);
+    _camLookAt.copy(_camTarget).add(_camFwd);
   } else {
     // Cinematic side
-    const offset = new THREE.Vector3(35, 8, -8).applyQuaternion(planeQuat);
-    target = planePos.clone().add(offset);
-    lookAt = planePos.clone();
+    _camOffset.set(35, 8, -8).applyQuaternion(planeQuat);
+    _camTarget.copy(planePos).add(_camOffset);
+    _camLookAt.copy(planePos);
   }
 
-  // Smooth camera follow (lerp)
-  const smooth = cameraMode === 1 ? 1 : 0.15;
-  camera.position.lerp(target, smooth);
-  camera.lookAt(lookAt);
+  // Smooth camera follow — framerate-independent exponential smoothing so the
+  // chase feel is identical at 30fps and 144fps. Cockpit stays a hard snap.
+  const smooth = cameraMode === 1 ? 1 : 1 - Math.exp(-9 * dt);
+  camera.position.lerp(_camTarget, smooth);
+  camera.lookAt(_camLookAt);
 
-  // Impact shake
+  // Impact shake (skipped under reduced-motion)
   if (shake > 0.001) {
     camera.position.x += (Math.random() - 0.5) * shake;
     camera.position.y += (Math.random() - 0.5) * shake;
@@ -137,10 +209,11 @@ function updateCamera(dt) {
   }
 }
 
-function addShake(amount) { shake = Math.min(3.0, shake + amount); }
+function addShake(amount) { if (!reducedMotion) shake = Math.min(3.0, shake + amount); }
 
 let flashEl;
 function flashScreen(strength = 0.3, color = '#ffffff') {
+  if (reducedMotion) return;
   if (!flashEl) flashEl = document.getElementById('screen-flash');
   if (!flashEl) return;
   flashEl.style.transition = 'none';
@@ -216,6 +289,19 @@ function endMinigame() {
   const result = addScore(mode, score);
   totalScore += score;
 
+  // Mark the mission as cleared and give its marker a distinct "done" look.
+  const mission = activeMinigame._mission;
+  if (mission) {
+    mission.cleared = true;
+    const mk = mission.marker;
+    if (mk.userData.beam) {
+      mk.userData.beam.material.color.setHex(0x2effa8);  // dim teal "done" glow
+      mk.userData.beam.material.opacity = 0.15;
+    }
+    if (mk.userData.ring) mk.userData.ring.material.color.setHex(0x2effa8);
+    if (mk.userData.halo) mk.userData.halo.material.color.setHex(0x2effa8);
+  }
+
   activeMinigame.cleanup();
   activeMinigame = null;
   document.getElementById('minigame-hud').classList.add('hidden');
@@ -255,10 +341,12 @@ function showToast(msg) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.remove('hidden');
-  // Re-trigger animation
-  el.style.animation = 'none';
-  void el.offsetWidth;
-  el.style.animation = '';
+  // Re-trigger the pop animation (skipped under reduced-motion).
+  if (!reducedMotion) {
+    el.style.animation = 'none';
+    void el.offsetWidth;
+    el.style.animation = '';
+  }
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.add('hidden'), 1800);
 }
@@ -292,9 +380,11 @@ function updateHUD() {
   const newText = Math.round(liveScore).toLocaleString();
   if (scoreEl.textContent !== newText) {
     scoreEl.textContent = newText;
-    scoreEl.style.animation = 'none';
-    void scoreEl.offsetWidth;
-    scoreEl.style.animation = 'scoreFlash 0.6s ease-out';
+    if (!reducedMotion) {
+      scoreEl.style.animation = 'none';
+      void scoreEl.offsetWidth;
+      scoreEl.style.animation = 'scoreFlash 0.6s ease-out';
+    }
   }
 
   if (activeMinigame) {
@@ -328,7 +418,7 @@ function drawMinimap() {
   // Radar sweep
   const t = performance.now() / 1000;
   const sweepAngle = (t * 1.5) % (Math.PI * 2);
-  const grad = ctx.createConicGradient ? ctx.createConicGradient(sweepAngle, W/2, H/2) : null;
+  const grad = (!reducedMotion && ctx.createConicGradient) ? ctx.createConicGradient(sweepAngle, W/2, H/2) : null;
   if (grad) {
     grad.addColorStop(0, 'rgba(0, 255, 136, 0.4)');
     grad.addColorStop(0.1, 'rgba(0, 255, 136, 0)');
@@ -344,7 +434,7 @@ function drawMinimap() {
   const pz = plane.position.z;
 
   // Plane heading - rotate map so up=forward
-  const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
+  const forward = _camFwd.set(0, 0, 1).applyQuaternion(plane.quaternion);
   const heading = Math.atan2(forward.x, forward.z);
 
   function worldToMap(wx, wz) {
@@ -420,80 +510,210 @@ function updateAudio(dt) {
 }
 
 // =====================================================
+// Settings (persisted) + accessibility
+// =====================================================
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem('sky_settings');
+    if (raw) settings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+  } catch { /* ignore corrupt/blocked storage */ }
+  applySettings();
+  syncSettingsUI();
+}
+function saveSettings() {
+  try { localStorage.setItem('sky_settings', JSON.stringify(settings)); } catch { /* ignore */ }
+}
+// Push settings into the live game (controller feel, body classes for CSS).
+function applySettings() {
+  reducedMotion = settings.reducedMotion;
+  document.body.classList.toggle('reduced-motion', settings.reducedMotion);
+  document.body.classList.toggle('cb-safe', settings.colorblind);
+  audio.setVolume(settings.volume);
+  if (controller) {
+    controller.invertPitch = settings.invertPitch;
+    controller.sensitivity = settings.sensitivity;
+  }
+}
+// Reflect current settings onto the menu controls.
+function syncSettingsUI() {
+  const inv = document.getElementById('set-invert');
+  if (!inv) return;
+  inv.checked = settings.invertPitch;
+  document.getElementById('set-sens').value = settings.sensitivity;
+  document.getElementById('set-sens-val').textContent = `${settings.sensitivity.toFixed(1)}×`;
+  document.getElementById('set-reduced').checked = settings.reducedMotion;
+  document.getElementById('set-colorblind').checked = settings.colorblind;
+  const volPct = Math.round(settings.volume * 100);
+  document.getElementById('set-volume').value = volPct;
+  document.getElementById('set-volume-val').textContent = `${volPct}%`;
+}
+function commitSettings() { applySettings(); syncSettingsUI(); saveSettings(); }
+
+function wireSettings() {
+  const inv = document.getElementById('set-invert');
+  const sens = document.getElementById('set-sens');
+  const red = document.getElementById('set-reduced');
+  const cb = document.getElementById('set-colorblind');
+  const vol = document.getElementById('set-volume');
+  inv.addEventListener('change', () => { settings.invertPitch = inv.checked; commitSettings(); });
+  sens.addEventListener('input', () => { settings.sensitivity = parseFloat(sens.value); commitSettings(); });
+  red.addEventListener('change', () => { settings.reducedMotion = red.checked; commitSettings(); });
+  cb.addEventListener('change', () => { settings.colorblind = cb.checked; commitSettings(); });
+  vol.addEventListener('input', () => { settings.volume = parseInt(vol.value, 10) / 100; commitSettings(); });
+  const openSettings = () => setActiveScreen('settings-screen');
+  document.getElementById('btn-settings').addEventListener('click', openSettings);
+  document.getElementById('btn-pause-settings').addEventListener('click', openSettings);
+}
+
+// =====================================================
+// First-run onboarding + dismissible tip
+// =====================================================
+function maybeShowOnboarding() {
+  if (localStorage.getItem('sky_onboarded')) return;
+  onboardingActive = true;
+  document.getElementById('onboard-screen').classList.add('active');
+}
+function dismissOnboarding() {
+  try { localStorage.setItem('sky_onboarded', '1'); } catch { /* ignore */ }
+  onboardingActive = false;
+  document.getElementById('onboard-screen').classList.remove('active');
+  lastTime = performance.now();   // swallow the frozen interval so dt doesn't spike
+}
+function maybeShowTip() {
+  const el = document.getElementById('hud-tip');
+  if (localStorage.getItem('sky_tip_dismissed')) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+}
+function dismissTip() {
+  try { localStorage.setItem('sky_tip_dismissed', '1'); } catch { /* ignore */ }
+  document.getElementById('hud-tip').classList.add('hidden');
+}
+
+// =====================================================
+// Waypoint — directional arrow toward the nearest open mission
+// =====================================================
+const _wpFwd = new THREE.Vector3();
+function updateWaypoint() {
+  const el = document.getElementById('waypoint');
+  if (activeMinigame) { el.classList.add('hidden'); return; }
+  let nearest = null, best = Infinity;
+  for (const m of missions) {
+    if (m.cleared) continue;
+    const d = plane.position.distanceTo(m.pos);
+    if (d < best) { best = d; nearest = m; }
+  }
+  if (!nearest) { el.classList.add('hidden'); return; }
+  const fwd = _wpFwd.set(0, 0, 1).applyQuaternion(plane.quaternion);
+  const heading = Math.atan2(fwd.x, fwd.z);
+  const targetAng = Math.atan2(nearest.pos.x - plane.position.x, nearest.pos.z - plane.position.z);
+  let rel = targetAng - heading;                 // 0 rad = dead ahead (arrow points up)
+  while (rel > Math.PI) rel -= Math.PI * 2;
+  while (rel < -Math.PI) rel += Math.PI * 2;
+  document.getElementById('wp-arrow').style.transform = `rotate(${rel}rad)`;
+  document.getElementById('wp-name').textContent = nearest.name;
+  document.getElementById('wp-dist').textContent = `${Math.round(best)} m`;
+  el.classList.remove('hidden');
+}
+
+// =====================================================
 // Game loop
 // =====================================================
+// Advance the simulation by one fixed step. Extracted so headless tests can
+// drive the game deterministically without depending on rAF timing.
+function simulate(dt) {
+  controller.update(dt, input.read());
+
+  // Soft floor — don't crash, just push up
+  const ground = terrainHeight(plane.position.x, plane.position.z);
+  if (plane.position.y < ground + 8) {
+    plane.position.y = ground + 8;
+    // small score penalty if in dogfight? leave alone
+  }
+  // Soft world bounds
+  const lim = WORLD_SIZE * 0.45;
+  plane.position.x = Math.max(-lim, Math.min(lim, plane.position.x));
+  plane.position.z = Math.max(-lim, Math.min(lim, plane.position.z));
+
+  if (activeMinigame) {
+    activeMinigame.update(dt);
+    if (activeMinigame.done) endMinigame();
+  } else {
+    checkMissions();
+  }
+
+  // Animate mission marker rings + pulse the halo / beam.
+  const pulse = 0.7 + Math.sin(performance.now() / 350) * 0.3;
+  for (const m of missions) {
+    const ud = m.marker.userData;
+    if (ud.ring) ud.ring.rotation.z += dt * 0.8;
+    if (ud.halo) { ud.halo.rotation.z -= dt * 0.5; ud.halo.scale.setScalar(pulse); }
+    if (ud.beam && !m.cleared) ud.beam.material.opacity = 0.22 + pulse * 0.14;
+  }
+
+  updateCamera(dt);
+  updateHUD();
+  drawMinimap();
+  updateWaypoint();
+  updateAudio(dt);
+  fx.update(dt);
+
+  // Particles + radio voice emitted from inside minigame logic
+  if (activeMinigame) {
+    for (const e of activeMinigame._fxQueue) {
+      const p = new THREE.Vector3(e.pos[0], e.pos[1], e.pos[2]);
+      if (e.kind === 'explosion') {
+        const size = e.size || 1;
+        fx.explosion(p, size);
+        const atten = THREE.MathUtils.clamp(1 - p.distanceTo(camera.position) / 700, 0.12, 1);
+        addShake(1.3 * size * atten);
+        if (size >= 1.4) flashScreen(0.2 * atten, '#ffd9a0');
+      } else if (e.kind === 'ring') {
+        fx.ringBurst(p, e.color || 0x00ff88);
+      }
+    }
+    activeMinigame._fxQueue.length = 0;
+    for (const v of activeMinigame._voQueue) audio.playVoice(v);
+    activeMinigame._voQueue.length = 0;
+  }
+
+  // Afterburner exhaust while boosting
+  if (controller.boosting) {
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
+    fx.exhaust(plane.position.clone().addScaledVector(fwd, -5), fwd.clone().multiplyScalar(-26));
+  }
+
+  // Water surface drifts (sky is a static equirectangular background)
+  if (world.water && world.water.material.map) {
+    const m = world.water.material.map;
+    const t = performance.now() / 1000;
+    m.offset.set((t * 0.012) % 1, (t * 0.007) % 1);
+  }
+}
+
+// Rolling frame-time stats for perf measurement (exposed to the page).
+// Records both CPU work time and the true wall-clock frame interval.
+const frameStats = { count: 0, cpu: [], frame: [], prev: 0 };
+function recordFrame(cpuMs, frameMs) {
+  frameStats.count++;
+  frameStats.cpu.push(cpuMs);
+  if (frameMs > 0) frameStats.frame.push(frameMs);
+  if (frameStats.cpu.length > 600) frameStats.cpu.shift();
+  if (frameStats.frame.length > 600) frameStats.frame.shift();
+}
+
 function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
-  if (state === State.PLAYING || state === State.MINIGAME) {
-    controller.update(dt, input.read());
-
-    // Soft floor — don't crash, just push up
-    const ground = terrainHeight(plane.position.x, plane.position.z);
-    if (plane.position.y < ground + 8) {
-      plane.position.y = ground + 8;
-      // small score penalty if in dogfight? leave alone
-    }
-    // Soft world bounds
-    const lim = WORLD_SIZE * 0.45;
-    plane.position.x = Math.max(-lim, Math.min(lim, plane.position.x));
-    plane.position.z = Math.max(-lim, Math.min(lim, plane.position.z));
-
-    if (activeMinigame) {
-      activeMinigame.update(dt);
-      if (activeMinigame.done) endMinigame();
-    } else {
-      checkMissions();
-    }
-
-    // Animate mission marker rings
-    for (const m of missions) {
-      const r = m.marker.userData.ring;
-      if (r) r.rotation.z += dt * 0.8;
-    }
-
-    updateCamera(dt);
-    updateHUD();
-    drawMinimap();
-    updateAudio(dt);
-    fx.update(dt);
-
-    // Particles + radio voice emitted from inside minigame logic
-    if (activeMinigame) {
-      for (const e of activeMinigame._fxQueue) {
-        const p = new THREE.Vector3(e.pos[0], e.pos[1], e.pos[2]);
-        if (e.kind === 'explosion') {
-          const size = e.size || 1;
-          fx.explosion(p, size);
-          const atten = THREE.MathUtils.clamp(1 - p.distanceTo(camera.position) / 700, 0.12, 1);
-          addShake(1.3 * size * atten);
-          if (size >= 1.4) flashScreen(0.2 * atten, '#ffd9a0');
-        } else if (e.kind === 'ring') {
-          fx.ringBurst(p, e.color || 0x00ff88);
-        }
-      }
-      activeMinigame._fxQueue.length = 0;
-      for (const v of activeMinigame._voQueue) audio.playVoice(v);
-      activeMinigame._voQueue.length = 0;
-    }
-
-    // Afterburner exhaust while boosting
-    if (controller.boosting) {
-      const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
-      fx.exhaust(plane.position.clone().addScaledVector(fwd, -5), fwd.clone().multiplyScalar(-26));
-    }
-
-    // Water surface drifts (sky is a static equirectangular background).
-    if (world.water && world.water.material.map) {
-      const m = world.water.material.map;
-      const t = now / 1000;
-      m.offset.set((t * 0.012) % 1, (t * 0.007) % 1);
-    }
+  const t0 = performance.now();
+  if ((state === State.PLAYING || state === State.MINIGAME) && !onboardingActive) {
+    simulate(dt);
   }
-
-  renderer.render(scene, camera);
+  renderFrame();
+  const t1 = performance.now();
+  recordFrame(t1 - t0, frameStats.prev ? t1 - frameStats.prev : 0);
+  frameStats.prev = t1;
 }
 
 // =====================================================
@@ -511,9 +731,13 @@ function startGame() {
     audio.stopAllMusic(0.4);
     setTimeout(() => audio.playVoice('takeoff'), 700);
   });
+  updateWaypoint();        // position the arrow before the first frame
+  maybeShowTip();
+  maybeShowOnboarding();   // first run: overlay control hints + freeze the sim
 }
 
 function togglePause() {
+  if (onboardingActive) return;   // Esc is inert while the welcome overlay is up
   if (state === State.PLAYING || state === State.MINIGAME) {
     state = State.PAUSED;
     setActiveScreen('pause-screen');
@@ -616,6 +840,17 @@ function wireUI() {
     }
   });
 
+  // Onboarding + dismissible tip
+  document.getElementById('btn-onboard-dismiss').addEventListener('click', dismissOnboarding);
+  document.getElementById('hud-tip-close').addEventListener('click', dismissTip);
+
+  // Pause-on-blur + drop any held keys so the plane doesn't fly off on a
+  // stuck input when the tab/window loses focus. (Input also clears keys.)
+  window.addEventListener('blur', () => {
+    if (input) input.keys.clear();
+    if (!onboardingActive && isFlying()) togglePause();
+  });
+
   wireAudioUI();
 }
 
@@ -660,19 +895,82 @@ function wireAudioUI() {
 // =====================================================
 setupScene();
 wireUI();
+wireSettings();
+loadSettings();
 loop(performance.now());
 
-// Debug / test hook
+// =====================================================
+// Test / debug hook — lets the Playwright suite drive the sim
+// deterministically and read out live state & frame timing.
+// =====================================================
 window.__sky = {
+  State,
   audio,
   get fx() { return fx; },
-  get scene() { return scene; },
   get camera() { return camera; },
-  get state() { return state; },
-  get controller() { return controller; },
-  get plane() { return plane; },
-  get missions() { return missions; },
-  get activeMinigame() { return activeMinigame; },
-  startGame,
   startMinigame,
+  get state() { return state; },
+  get cameraMode() { return cameraMode; },
+  get totalScore() { return totalScore; },
+  get activeMinigame() { return activeMinigame; },
+  get settings() { return settings; },
+  get onboardingActive() { return onboardingActive; },
+  get heldKeys() { return input ? [...input.keys] : []; },
+  applySettings,
+  get plane() { return plane; },
+  get controller() { return controller; },
+  get missions() { return missions; },
+  get renderCalls() { return renderer.info.render.calls; },
+  get renderTris() { return renderer.info.render.triangles; },
+  get world() { return world; },
+  get scene() { return scene; },
+  // Debug handle the test suite reads to confirm the bloom pass is live.
+  get bloom() {
+    return {
+      active: !!(useBloom && composer && bloomPass),
+      composer,
+      pass: bloomPass,
+      isUnrealBloomPass: bloomPass ? bloomPass.constructor.name === 'UnrealBloomPass' : false,
+      isEffectComposer: composer ? composer.constructor.name === 'EffectComposer' : false,
+      strength: bloomPass ? bloomPass.strength : 0,
+      radius: bloomPass ? bloomPass.radius : 0,
+      threshold: bloomPass ? bloomPass.threshold : 0,
+      passes: composer ? composer.passes.map(p => p.constructor.name) : [],
+    };
+  },
+  // Toggle bloom on/off so perf.spec can A/B frame time (no-bloom vs bloom).
+  setBloom(on) { useBloom = !!on; },
+  THREE,
+  startGame,
+  // Advance the simulation deterministically by `dt` seconds (no rAF needed).
+  tick(dt = 1 / 60) {
+    if (isFlying()) simulate(dt);
+    renderFrame();
+  },
+  // Teleport to a mission and start its minigame immediately.
+  forceMinigame(mode) {
+    const m = missions.find(x => x.mode === mode);
+    if (!m) return null;
+    plane.position.copy(m.pos).add(new THREE.Vector3(0, 150, -250));
+    plane.quaternion.identity();
+    controller.velocity.set(0, 0, 0);
+    state = State.PLAYING;
+    startMinigame(m);
+    return activeMinigame;
+  },
+  frameStats() {
+    const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+    return {
+      count: frameStats.count,
+      cpuMs: avg(frameStats.cpu),
+      frameMs: avg(frameStats.frame),
+      samples: frameStats.cpu.length,
+    };
+  },
+  resetFrameStats() {
+    frameStats.count = 0;
+    frameStats.cpu.length = 0;
+    frameStats.frame.length = 0;
+    frameStats.prev = 0;
+  },
 };

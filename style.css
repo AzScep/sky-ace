@@ -677,6 +677,198 @@ html, body {
   to { transform: translate(-50%, 0); opacity: 1; }
 }
 
+/* ============== SETTINGS ============== */
+
+.settings-grid { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; }
+.set-section {
+  font-family: var(--f-display);
+  font-size: 12px;
+  letter-spacing: 3px;
+  color: var(--c-text-dim);
+  margin: 16px 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--c-border);
+}
+.set-section:first-child { margin-top: 0; }
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 4px;
+  cursor: pointer;
+}
+.set-label { font-size: 14px; color: var(--c-text); letter-spacing: 1px; }
+.set-control { display: flex; align-items: center; gap: 10px; }
+.set-val {
+  font-family: var(--f-mono);
+  font-size: 13px;
+  color: var(--c-accent);
+  min-width: 44px;
+  text-align: right;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 150px;
+  height: 4px;
+  background: var(--c-border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 8px rgba(0, 255, 136, 0.6);
+  cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 16px; height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 8px rgba(0, 255, 136, 0.6);
+  cursor: pointer;
+}
+
+.set-toggle {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  width: 46px; height: 24px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--c-border);
+  border-radius: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  flex: none;
+}
+.set-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: var(--c-text-dim);
+  transition: transform 0.15s, background 0.15s;
+}
+.set-toggle:checked { background: rgba(0, 255, 136, 0.25); border-color: var(--c-accent); }
+.set-toggle:checked::after {
+  transform: translateX(22px);
+  background: var(--c-accent);
+  box-shadow: 0 0 8px rgba(0, 255, 136, 0.6);
+}
+.set-toggle:focus-visible { outline: 2px solid var(--c-accent-2); outline-offset: 2px; }
+
+/* ============== ONBOARDING ============== */
+
+.onboard-box { max-width: 540px; text-align: center; }
+.onboard-lead { font-size: 15px; line-height: 1.7; margin-bottom: 18px; }
+.onboard-box .accent { color: var(--c-accent); }
+.onboard-controls {
+  justify-items: start;
+  text-align: left;
+  max-width: 400px;
+  margin: 0 auto 8px;
+}
+
+/* ============== WAYPOINT + TIP ============== */
+
+.waypoint {
+  position: absolute;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+  z-index: 6;
+}
+.wp-arrow {
+  font-size: 30px;
+  line-height: 1;
+  color: var(--c-warn);
+  text-shadow: 0 0 12px rgba(255, 149, 0, 0.8);
+  transition: transform 0.12s linear;
+  will-change: transform;
+}
+.wp-meta {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--c-text);
+  background: rgba(8, 22, 45, 0.7);
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 149, 0, 0.4);
+}
+
+.hud-tip {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(8, 22, 45, 0.92);
+  border: 1px solid var(--c-accent-2);
+  padding: 8px 12px 8px 16px;
+  font-size: 12px;
+  color: var(--c-text);
+  letter-spacing: 1px;
+  z-index: 7;
+  max-width: 92vw;
+}
+.hud-tip kbd {
+  padding: 2px 6px;
+  background: #1a2c4e;
+  border: 1px solid var(--c-border);
+  border-radius: 3px;
+  font-family: var(--f-mono);
+  color: var(--c-accent);
+  font-size: 11px;
+}
+.hud-tip b { color: var(--c-warn); }
+.hud-tip-close {
+  background: transparent;
+  border: none;
+  color: var(--c-text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+  pointer-events: auto;
+}
+.hud-tip-close:hover { color: var(--c-accent); }
+
+/* ============== ACCESSIBILITY MODES ============== */
+
+/* Colorblind-safe accent: swap the green/orange affordances for a
+   blue + amber pairing that stays distinct across common CVD types. */
+body.cb-safe {
+  --c-accent: #29b6f6;
+  --c-accent-2: #ffd24d;
+  --c-warn: #ffb300;
+  --c-danger: #ec407a;
+}
+
+/* Reduced motion: collapse animations/transitions to a single end-state
+   frame so VFX still resolve to their final look but nothing loops/moves. */
+body.reduced-motion *,
+body.reduced-motion *::before,
+body.reduced-motion *::after {
+  animation-duration: 0.001s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001s !important;
+}
+
 @media (max-width: 600px) {
   .top-hud { flex-wrap: wrap; padding: 6px; gap: 4px; }
   .hud-panel { min-width: 60px; padding: 2px 6px; }
@@ -684,4 +876,10 @@ html, body {
   .minimap { width: 130px; height: 130px; }
   .modal-box { min-width: unset; width: 92vw; padding: 24px; }
   .lb-row { grid-template-columns: 30px 40px 1fr 60px 70px; font-size: 12px; gap: 6px; }
+  .waypoint { top: 72px; }
+  .wp-arrow { font-size: 24px; }
+  .hud-tip { font-size: 10px; bottom: 12px; padding: 6px 8px 6px 10px; gap: 8px; }
+  .set-row { padding: 9px 2px; }
+  .set-label { font-size: 13px; }
+  input[type="range"] { width: 108px; }
 }

@@ -37,6 +37,7 @@ class AudioManager {
     this.buffers = {};
     this.ready = false;
     this.muted = false;
+    this.volume = 1;          // user master volume (0..1), driven by settings
     try { this.muted = localStorage.getItem(MUTE_KEY) === '1'; } catch {}
     this.masterGain = null;
     this.musicGain = null;
@@ -54,7 +55,7 @@ class AudioManager {
     const AC = window.AudioContext || window.webkitAudioContext;
     this.ctx = new AC();
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = this.muted ? 0 : 1;
+    this.masterGain.gain.value = this.muted ? 0 : this.volume;
     this.masterGain.connect(this.ctx.destination);
     this.musicGain = this.ctx.createGain();
     this.musicGain.connect(this.masterGain);
@@ -188,11 +189,22 @@ class AudioManager {
       const now = this.ctx.currentTime;
       this.masterGain.gain.cancelScheduledValues(now);
       this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
-      this.masterGain.gain.linearRampToValueAtTime(m ? 0 : 1, now + 0.15);
+      this.masterGain.gain.linearRampToValueAtTime(m ? 0 : this.volume, now + 0.15);
     }
     return this.muted;
   }
   toggleMute() { return this.setMuted(!this.muted); }
+
+  // User master volume (0..1), wired to the settings slider.
+  setVolume(v) {
+    this.volume = Math.max(0, Math.min(1, v));
+    if (this.masterGain && this.ctx && !this.muted) {
+      const now = this.ctx.currentTime;
+      this.masterGain.gain.cancelScheduledValues(now);
+      this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
+      this.masterGain.gain.linearRampToValueAtTime(this.volume, now + 0.1);
+    }
+  }
 
   // Synthesized UI tick — no asset needed.
   click() {

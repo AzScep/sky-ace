@@ -3,7 +3,7 @@
 // =====================================================
 
 import * as THREE from 'three';
-import { terrainHeight, WORLD_SIZE } from './world.js?v=7';
+import { terrainHeight, WORLD_SIZE } from './world.js?v=9';
 
 // Swept ring intersection: did segment p0→p1 cross the disc at (center, normal, radius)?
 function sweptRingHit(p0, p1, center, normal, radius) {

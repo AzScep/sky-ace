@@ -42,6 +42,7 @@
         <button class="btn primary" id="btn-start">▶ START MISSION</button>
         <button class="btn" id="btn-leaderboard">★ LEADERBOARD</button>
         <button class="btn" id="btn-controls">⌨ CONTROLS</button>
+        <button class="btn" id="btn-settings">⚙ SETTINGS</button>
         <button class="btn" id="btn-about">ℹ ABOUT</button>
       </div>
 
@@ -68,6 +69,45 @@
         <div><kbd>R</kbd></div><div>Reset Position</div>
         <div><kbd>M</kbd></div><div>Mute / Unmute Sound</div>
         <div><kbd>Esc</kbd></div><div>Pause / Menu</div>
+      </div>
+      <button class="btn primary close-modal">CLOSE</button>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="settings-screen" class="screen modal">
+    <div class="modal-box">
+      <h2>⚙ SETTINGS</h2>
+      <div class="settings-grid">
+        <div class="set-section">CONTROLS</div>
+        <label class="set-row" for="set-invert">
+          <span class="set-label">Invert Pitch</span>
+          <input type="checkbox" id="set-invert" class="set-toggle" />
+        </label>
+        <label class="set-row" for="set-sens">
+          <span class="set-label">Sensitivity</span>
+          <span class="set-control">
+            <input type="range" id="set-sens" min="0.5" max="2" step="0.1" value="1" />
+            <span class="set-val" id="set-sens-val">1.0×</span>
+          </span>
+        </label>
+
+        <div class="set-section">ACCESSIBILITY</div>
+        <label class="set-row" for="set-reduced">
+          <span class="set-label">Reduced Motion</span>
+          <input type="checkbox" id="set-reduced" class="set-toggle" />
+        </label>
+        <label class="set-row" for="set-colorblind">
+          <span class="set-label">Colorblind-Safe Accent</span>
+          <input type="checkbox" id="set-colorblind" class="set-toggle" />
+        </label>
+        <label class="set-row" for="set-volume">
+          <span class="set-label">Master Volume</span>
+          <span class="set-control">
+            <input type="range" id="set-volume" min="0" max="100" step="1" value="70" />
+            <span class="set-val" id="set-volume-val">70%</span>
+          </span>
+        </label>
       </div>
       <button class="btn primary close-modal">CLOSE</button>
     </div>
@@ -115,6 +155,7 @@
       <h2>FLIGHT PAUSED</h2>
       <button class="btn primary" id="btn-resume">▶ RESUME</button>
       <button class="btn" id="btn-pause-controls">⌨ CONTROLS</button>
+      <button class="btn" id="btn-pause-settings">⚙ SETTINGS</button>
       <button class="btn" id="btn-quit">✕ RETURN TO MENU</button>
     </div>
   </div>
@@ -129,10 +170,41 @@
     </div>
   </div>
 
+  <!-- FIRST-RUN ONBOARDING -->
+  <div id="onboard-screen" class="screen modal">
+    <div class="modal-box onboard-box">
+      <h2>WELCOME, ACE</h2>
+      <p class="onboard-lead">Fly through a <b class="accent">glowing marker</b> to start a mission.
+      Follow the <b class="accent">▲ waypoint</b> at the top of your HUD toward the nearest one.</p>
+      <div class="control-grid onboard-controls">
+        <div><kbd>W</kbd> / <kbd>S</kbd></div><div>Pitch down / up</div>
+        <div><kbd>A</kbd> / <kbd>D</kbd></div><div>Roll left / right</div>
+        <div><kbd>Q</kbd> / <kbd>E</kbd></div><div>Yaw left / right</div>
+        <div><kbd>Shift</kbd> / <kbd>Ctrl</kbd></div><div>Throttle up / down</div>
+        <div><kbd>Space</kbd></div><div>Boost</div>
+        <div><kbd>C</kbd> · <kbd>R</kbd></div><div>Camera · Reset</div>
+        <div><kbd>Esc</kbd></div><div>Pause &amp; Settings</div>
+      </div>
+      <button class="btn primary" id="btn-onboard-dismiss">GOT IT — START FLYING</button>
+    </div>
+  </div>
+
   <!-- GAME HUD -->
   <div id="game-hud" class="hidden">
     <canvas id="game-canvas"></canvas>
     <div id="screen-flash"></div>
+
+    <!-- Waypoint indicator → nearest mission -->
+    <div id="waypoint" class="waypoint hidden">
+      <div class="wp-arrow" id="wp-arrow">▲</div>
+      <div class="wp-meta"><span id="wp-name">MISSION</span> · <span id="wp-dist">0 m</span></div>
+    </div>
+
+    <!-- Dismissible first-run tip -->
+    <div id="hud-tip" class="hud-tip hidden">
+      <span>Follow the <b>▲ waypoint</b> to a mission · press <kbd>Esc</kbd> for Settings</span>
+      <button id="hud-tip-close" class="hud-tip-close" aria-label="Dismiss tip">✕</button>
+    </div>
 
     <!-- Top HUD -->
     <div class="hud top-hud">
@@ -161,10 +233,9 @@
       </div>
     </div>
 
-    <!-- Crosshair -->
+    <!-- Crosshair (ring/disc removed — was reading as a shadow over the plane) -->
     <div class="crosshair">
       <svg viewBox="-50 -50 100 100">
-        <circle cx="0" cy="0" r="30" fill="none" stroke="#00ff88" stroke-width="1" opacity="0.6"/>
         <line x1="-40" y1="0" x2="-15" y2="0" stroke="#00ff88" stroke-width="1.5"/>
         <line x1="40" y1="0" x2="15" y2="0" stroke="#00ff88" stroke-width="1.5"/>
         <line x1="0" y1="-40" x2="0" y2="-15" stroke="#00ff88" stroke-width="1.5"/>
@@ -204,10 +275,11 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
     }
   }
   </script>
-  <script type="module" src="game.js?v=8"></script>
+  <script type="module" src="game.js?v=9"></script>
 </body>
 </html>
