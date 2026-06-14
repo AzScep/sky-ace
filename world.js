@@ -48,38 +48,29 @@ export function terrainHeight(x, z) {
 }
 
 export function buildWorld(scene) {
-  // ----- SKY -----
-  const skyGeo = new THREE.SphereGeometry(WORLD_SIZE * 1.2, 32, 16);
-  const skyMat = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    uniforms: {
-      topColor:    { value: new THREE.Color(0x0a3a6b) },
-      midColor:    { value: new THREE.Color(0x4a8fc7) },
-      botColor:    { value: new THREE.Color(0xf8c878) },
-    },
-    vertexShader: `
-      varying vec3 vWorldPos;
-      void main() {
-        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform vec3 topColor;
-      uniform vec3 midColor;
-      uniform vec3 botColor;
-      varying vec3 vWorldPos;
-      void main() {
-        float h = normalize(vWorldPos).y;
-        vec3 col;
-        if (h > 0.0) col = mix(midColor, topColor, smoothstep(0.0, 0.6, h));
-        else         col = mix(midColor, botColor, smoothstep(0.0, -0.2, h));
-        gl_FragColor = vec4(col, 1.0);
-      }
-    `,
-  });
-  const sky = new THREE.Mesh(skyGeo, skyMat);
-  scene.add(sky);
+  // ----- TEXTURES (Higgsfield-generated, seamless) -----
+  const texLoader = new THREE.TextureLoader();
+  const tiled = (path) => {
+    const t = texLoader.load(path);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8;
+    return t;
+  };
+  const texGrass = tiled('assets/img/tex/grass.jpg');
+  const texRock  = tiled('assets/img/tex/rock.jpg');
+  const texSnow  = tiled('assets/img/tex/snow.jpg');
+  const texSand  = tiled('assets/img/tex/sand.jpg');
+  const texWater = tiled('assets/img/tex/water.jpg');
+
+  // ----- SKY (Higgsfield painterly equirectangular backdrop) -----
+  // Three's built-in background skybox handles color management + the azimuth
+  // seam correctly (a raw dome shader rendered the image too dark).
+  const skyTex = texLoader.load('assets/img/sky.jpg');
+  skyTex.colorSpace = THREE.SRGBColorSpace;
+  skyTex.mapping = THREE.EquirectangularReflectionMapping;
+  scene.background = skyTex;
+  const sky = skyTex;
 
   // ----- SUN -----
   const sunGeo = new THREE.SphereGeometry(120, 16, 16);
@@ -120,10 +111,48 @@ export function buildWorld(scene) {
   }
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   terrainGeo.computeVertexNormals();
-  const terrainMat = new THREE.MeshLambertMaterial({
+  const terrainMat = new THREE.MeshStandardMaterial({
     vertexColors: true,
     flatShading: true,
+    roughness: 0.95,
+    metalness: 0.0,
   });
+  // Blend grass / sand / rock / snow by world height + slope, keeping a faint
+  // tint from the original elevation vertex colors for large-scale variation.
+  terrainMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uGrass = { value: texGrass };
+    shader.uniforms.uRock  = { value: texRock };
+    shader.uniforms.uSnow  = { value: texSnow };
+    shader.uniforms.uSand  = { value: texSand };
+    shader.uniforms.uScale = { value: 0.02 };
+    shader.vertexShader = 'varying vec3 vWPos;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      '#include <begin_vertex>\n  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+    );
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>',
+        '#include <common>\n varying vec3 vWPos;\n uniform sampler2D uGrass, uRock, uSnow, uSand;\n uniform float uScale;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec3 wn = normalize(cross(dFdx(vWPos), dFdy(vWPos)));
+          float slope = clamp(1.0 - wn.y, 0.0, 1.0);
+          vec2 uv = vWPos.xz * uScale;
+          vec3 cG = texture2D(uGrass, uv).rgb;
+          vec3 cR = texture2D(uRock,  uv * 0.7).rgb;
+          vec3 cS = texture2D(uSnow,  uv * 0.6).rgb;
+          vec3 cD = texture2D(uSand,  uv * 0.9).rgb;
+          float h = vWPos.y;
+          float wSand  = 1.0 - smoothstep(-10.0, 45.0, h);
+          float wGrass = smoothstep(15.0, 70.0, h) * (1.0 - smoothstep(230.0, 360.0, h));
+          float wRock  = smoothstep(300.0, 420.0, h) * (1.0 - smoothstep(490.0, 560.0, h));
+          float wSnow  = smoothstep(500.0, 600.0, h);
+          float tot = wSand + wGrass + wRock + wSnow + 1e-4;
+          vec3 terr = (cD*wSand + cG*wGrass + cR*wRock + cS*wSnow) / tot;
+          terr = mix(terr, cR, smoothstep(0.38, 0.72, slope));   // cliffs -> rock
+          diffuseColor.rgb = terr * mix(vec3(1.0), vColor.rgb * 1.5, 0.2);
+        }
+      `);
+  };
   const terrain = new THREE.Mesh(terrainGeo, terrainMat);
   terrain.receiveShadow = true;
   scene.add(terrain);
@@ -131,35 +160,39 @@ export function buildWorld(scene) {
   // ----- WATER PLANE -----
   const waterGeo = new THREE.PlaneGeometry(WORLD_SIZE * 1.1, WORLD_SIZE * 1.1);
   waterGeo.rotateX(-Math.PI / 2);
+  texWater.repeat.set(60, 60);
   const waterMat = new THREE.MeshLambertMaterial({
-    color: 0x1d6fa5,
+    color: 0x6fb4cf,
+    map: texWater,
     transparent: true,
-    opacity: 0.75,
+    opacity: 0.82,
   });
   const water = new THREE.Mesh(waterGeo, waterMat);
   water.position.y = -50;
   scene.add(water);
 
-  // ----- CLOUDS -----
-  const clouds = new THREE.Group();
-  const cloudMat = new THREE.MeshLambertMaterial({
-    color: 0xffffff, transparent: true, opacity: 0.85,
+  // ----- CLOUDS (billboarded sprites) -----
+  const cloudTex = texLoader.load('assets/img/fx/cloud.png');
+  cloudTex.colorSpace = THREE.SRGBColorSpace;
+  const cloudMat = new THREE.SpriteMaterial({
+    map: cloudTex, transparent: true, depthWrite: false, opacity: 0.95,
   });
-  for (let i = 0; i < 60; i++) {
+  const clouds = new THREE.Group();
+  for (let i = 0; i < 75; i++) {
     const cloud = new THREE.Group();
-    const count = 3 + Math.floor(Math.random() * 4);
+    const count = 2 + Math.floor(Math.random() * 3);
     for (let j = 0; j < count; j++) {
-      const r = 40 + Math.random() * 60;
-      const s = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 5), cloudMat);
-      s.position.set((Math.random()-0.5)*120, (Math.random()-0.5)*30, (Math.random()-0.5)*120);
-      cloud.add(s);
+      const sp = new THREE.Sprite(cloudMat);
+      const s = 170 + Math.random() * 230;
+      sp.scale.set(s, s * 0.6, 1);
+      sp.position.set((Math.random() - 0.5) * s, (Math.random() - 0.5) * s * 0.16, (Math.random() - 0.5) * s * 0.6);
+      cloud.add(sp);
     }
     cloud.position.set(
       (Math.random() - 0.5) * WORLD_SIZE * 0.9,
-      600 + Math.random() * 500,
+      520 + Math.random() * 700,
       (Math.random() - 0.5) * WORLD_SIZE * 0.9
     );
-    cloud.scale.y = 0.4;
     clouds.add(cloud);
   }
   scene.add(clouds);

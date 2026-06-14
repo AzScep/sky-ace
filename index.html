@@ -12,6 +12,8 @@
 <body>
   <!-- START SCREEN -->
   <div id="start-screen" class="screen active">
+    <div class="hero-bg"></div>
+    <div class="hero-scrim"></div>
     <div class="bg-clouds"></div>
     <div class="bg-sun"></div>
     <div class="bg-plane">
@@ -44,10 +46,11 @@
       </div>
 
       <div class="footer-bar">
-        <span>BUILD 1.0 • THREE.JS</span>
+        <span>BUILD 2.3 • THREE.JS • HIGGSFIELD AV + VFX</span>
         <span class="blink">● SYSTEMS NOMINAL</span>
       </div>
     </div>
+    <button class="btn-mute" id="btn-mute-menu" aria-label="Toggle sound">🔊</button>
   </div>
 
   <!-- CONTROLS PANEL -->
@@ -60,8 +63,10 @@
         <div><kbd>Q</kbd> / <kbd>E</kbd></div><div>Yaw Left / Right</div>
         <div><kbd>Shift</kbd> / <kbd>Ctrl</kbd></div><div>Throttle Up / Down</div>
         <div><kbd>Space</kbd></div><div>Boost</div>
+        <div><kbd>F</kbd></div><div>Fire / Drop Bomb</div>
         <div><kbd>C</kbd></div><div>Toggle Camera</div>
         <div><kbd>R</kbd></div><div>Reset Position</div>
+        <div><kbd>M</kbd></div><div>Mute / Unmute Sound</div>
         <div><kbd>Esc</kbd></div><div>Pause / Menu</div>
       </div>
       <button class="btn primary close-modal">CLOSE</button>
@@ -127,6 +132,7 @@
   <!-- GAME HUD -->
   <div id="game-hud" class="hidden">
     <canvas id="game-canvas"></canvas>
+    <div id="screen-flash"></div>
 
     <!-- Top HUD -->
     <div class="hud top-hud">
@@ -173,6 +179,9 @@
       <div class="minimap-label">RADAR</div>
     </div>
 
+    <!-- Sound toggle -->
+    <button class="btn-mute hud-mute" id="btn-mute-hud" aria-label="Toggle sound">🔊</button>
+
     <!-- Minigame overlay -->
     <div id="minigame-hud" class="minigame-hud hidden">
       <div class="mg-title" id="mg-title">MINIGAME</div>
@@ -199,6 +208,6 @@
     }
   }
   </script>
-  <script type="module" src="game.js?v=4"></script>
+  <script type="module" src="game.js?v=8"></script>
 </body>
 </html>

@@ -60,6 +60,55 @@ html, body {
   flex-direction: column;
 }
 
+/* Cinematic hero backdrop (Higgsfield-generated key art) */
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: #0a1428 url('assets/img/hero.jpg') center 40% / cover no-repeat;
+  animation: heroDrift 26s ease-in-out infinite alternate;
+}
+@keyframes heroDrift {
+  from { transform: scale(1.06); }
+  to   { transform: scale(1.14) translate(-1.5%, -1%); }
+}
+.hero-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background:
+    linear-gradient(180deg, rgba(10,20,40,0.55) 0%, rgba(10,20,40,0.15) 38%, rgba(10,20,40,0.82) 100%),
+    radial-gradient(ellipse at 50% 118%, rgba(0,212,255,0.14), transparent 60%);
+}
+/* With the photoreal hero in place, hide the old cartoon decorations */
+#start-screen .bg-sun,
+#start-screen .bg-plane,
+#start-screen .bg-clouds { display: none; }
+
+/* Sound toggle button (menu + HUD) */
+.btn-mute {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 46px;
+  height: 46px;
+  font-size: 20px;
+  line-height: 1;
+  background: rgba(8, 22, 45, 0.7);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  cursor: pointer;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  transition: all 0.15s ease;
+}
+.btn-mute:hover { border-color: var(--c-accent-2); background: rgba(0, 212, 255, 0.15); }
+.btn-mute.muted { color: var(--c-danger); border-color: var(--c-danger); opacity: 0.9; }
+.hud-mute { z-index: 7; }
+
 .bg-sun {
   position: absolute;
   top: 15%;
@@ -424,6 +473,16 @@ html, body {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+#screen-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 8;
+  mix-blend-mode: screen;
 }
 
 .hud {

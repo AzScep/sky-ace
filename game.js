@@ -3,10 +3,12 @@
 // =====================================================
 
 import * as THREE from 'three';
-import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=4';
-import { createPlane, PlaneController, Input } from './plane.js?v=4';
-import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=4';
-import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=4';
+import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=7';
+import { createPlane, PlaneController, Input } from './plane.js?v=7';
+import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=8';
+import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=7';
+import { audio } from './audio.js?v=7';
+import { FX } from './fx.js?v=7';
 
 // ----- State -----
 const State = {
@@ -28,6 +30,9 @@ let totalScore = 0;
 let cameraMode = 0;           // 0 = chase, 1 = cockpit, 2 = cinematic
 let lastTime = performance.now();
 let minimapCtx;
+let fx;                       // particle FX system
+let prevBoost = false;        // for boost-whoosh edge detection
+let shake = 0;                // current camera-shake magnitude
 
 // =====================================================
 // Setup
@@ -43,6 +48,7 @@ function setupScene() {
   renderer.setClearColor(0x88a8c8);
 
   world = buildWorld(scene);
+  fx = new FX(scene);
 
   plane = createPlane();
   scene.add(plane);
@@ -119,6 +125,30 @@ function updateCamera(dt) {
   const smooth = cameraMode === 1 ? 1 : 0.15;
   camera.position.lerp(target, smooth);
   camera.lookAt(lookAt);
+
+  // Impact shake
+  if (shake > 0.001) {
+    camera.position.x += (Math.random() - 0.5) * shake;
+    camera.position.y += (Math.random() - 0.5) * shake;
+    camera.position.z += (Math.random() - 0.5) * shake;
+    shake *= Math.pow(0.0016, dt);   // fast decay (~halves every ~70ms)
+  } else {
+    shake = 0;
+  }
+}
+
+function addShake(amount) { shake = Math.min(3.0, shake + amount); }
+
+let flashEl;
+function flashScreen(strength = 0.3, color = '#ffffff') {
+  if (!flashEl) flashEl = document.getElementById('screen-flash');
+  if (!flashEl) return;
+  flashEl.style.transition = 'none';
+  flashEl.style.background = color;
+  flashEl.style.opacity = String(strength);
+  void flashEl.offsetWidth;            // reflow so the fade restarts
+  flashEl.style.transition = 'opacity 0.4s ease-out';
+  flashEl.style.opacity = '0';
 }
 
 function cycleCamera() {
@@ -172,6 +202,8 @@ function startMinigame(mission) {
   document.getElementById('mg-title').textContent = mission.name;
   document.getElementById('mg-objective').textContent = activeMinigame.objective;
   showToast(`▶ ${mission.name}`);
+  audio.playMusic('music_action');
+  if (mission.mode === 'dogfight' || mission.mode === 'bomb') audio.playVoice('combat');
 }
 
 function endMinigame() {
@@ -198,6 +230,10 @@ function handleFire() {
     activeMinigame.dropBomb(plane.position.clone(), controller.velocity.clone());
   } else if (activeMinigame.mode === 'dogfight') {
     activeMinigame.fireBullet(plane.position.clone(), plane.quaternion.clone());
+    audio.play('cannon', { rate: 0.95 + Math.random() * 0.1 });
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
+    fx.muzzle(plane.position.clone().addScaledVector(fwd, 6), fwd);
+    addShake(0.13);
   }
 }
 
@@ -228,6 +264,10 @@ function showToast(msg) {
 }
 
 function showResult(mode, score, reason, result) {
+  audio.stopAllMusic(0.5);
+  const win = reason !== 'TIME UP' && result.grade !== 'D';
+  if (win) { audio.play('fanfare'); flashScreen(0.28, '#00ff88'); }
+  audio.playVoice(win ? 'complete' : 'failed');
   const el = document.getElementById('result-screen');
   document.getElementById('rank-display').textContent = result.grade;
   document.getElementById('rank-display').className = `rank-display grade-${result.grade}`;
@@ -356,6 +396,30 @@ function drawMinimap() {
 }
 
 // =====================================================
+// Audio — engine drone reacts to speed/throttle; drains minigame SFX
+// =====================================================
+function updateAudio(dt) {
+  if (!audio.ready) return;
+  if (state === State.PLAYING || state === State.MINIGAME) {
+    audio.resume();
+    if (!audio.isLoopActive('engine')) audio.startLoop('engine');
+    const t = THREE.MathUtils.clamp((controller.speed - 30) / (320 - 30), 0, 1);
+    const rate = 0.78 + t * 0.95;
+    const gain = 0.16 + controller.throttle * 0.18 + (controller.boosting ? 0.16 : 0);
+    audio.setLoopParams('engine', gain, rate, 0.12);
+
+    if (controller.boosting && !prevBoost) audio.play('boost');
+    prevBoost = controller.boosting;
+
+    // Sounds emitted from inside minigame logic
+    if (activeMinigame && activeMinigame._sfxQueue && activeMinigame._sfxQueue.length) {
+      for (const s of activeMinigame._sfxQueue) audio.play(s);
+      activeMinigame._sfxQueue.length = 0;
+    }
+  }
+}
+
+// =====================================================
 // Game loop
 // =====================================================
 function loop(now) {
@@ -393,6 +457,40 @@ function loop(now) {
     updateCamera(dt);
     updateHUD();
     drawMinimap();
+    updateAudio(dt);
+    fx.update(dt);
+
+    // Particles + radio voice emitted from inside minigame logic
+    if (activeMinigame) {
+      for (const e of activeMinigame._fxQueue) {
+        const p = new THREE.Vector3(e.pos[0], e.pos[1], e.pos[2]);
+        if (e.kind === 'explosion') {
+          const size = e.size || 1;
+          fx.explosion(p, size);
+          const atten = THREE.MathUtils.clamp(1 - p.distanceTo(camera.position) / 700, 0.12, 1);
+          addShake(1.3 * size * atten);
+          if (size >= 1.4) flashScreen(0.2 * atten, '#ffd9a0');
+        } else if (e.kind === 'ring') {
+          fx.ringBurst(p, e.color || 0x00ff88);
+        }
+      }
+      activeMinigame._fxQueue.length = 0;
+      for (const v of activeMinigame._voQueue) audio.playVoice(v);
+      activeMinigame._voQueue.length = 0;
+    }
+
+    // Afterburner exhaust while boosting
+    if (controller.boosting) {
+      const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
+      fx.exhaust(plane.position.clone().addScaledVector(fwd, -5), fwd.clone().multiplyScalar(-26));
+    }
+
+    // Water surface drifts (sky is a static equirectangular background).
+    if (world.water && world.water.material.map) {
+      const m = world.water.material.map;
+      const t = now / 1000;
+      m.offset.set((t * 0.012) % 1, (t * 0.007) % 1);
+    }
   }
 
   renderer.render(scene, camera);
@@ -408,15 +506,22 @@ function startGame() {
   lastTime = performance.now();
   controller.reset(new THREE.Vector3(0, 400, 0));
   totalScore = 0;
+  audio.init().then(() => {
+    audio.resume();
+    audio.stopAllMusic(0.4);
+    setTimeout(() => audio.playVoice('takeoff'), 700);
+  });
 }
 
 function togglePause() {
   if (state === State.PLAYING || state === State.MINIGAME) {
     state = State.PAUSED;
     setActiveScreen('pause-screen');
+    audio.suspend();
   } else if (state === State.PAUSED) {
     state = activeMinigame ? State.MINIGAME : State.PLAYING;
     setActiveScreen(null);
+    audio.resume();
   }
 }
 
@@ -426,6 +531,10 @@ function quitToMenu() {
   document.getElementById('game-hud').classList.add('hidden');
   state = State.MENU;
   setActiveScreen('start-screen');
+  audio.resume();
+  audio.stopLoop('engine', 0.2);
+  prevBoost = false;
+  audio.playMusic('music_menu');
 }
 
 function setActiveScreen(id) {
@@ -506,6 +615,44 @@ function wireUI() {
       renderLeaderboard(document.querySelector('.lb-tabs .tab.active').dataset.tab);
     }
   });
+
+  wireAudioUI();
+}
+
+// =====================================================
+// Audio UI — unlock on first gesture, click ticks, mute toggle
+// =====================================================
+function updateMuteUI() {
+  document.querySelectorAll('.btn-mute').forEach(b => {
+    b.classList.toggle('muted', audio.muted);
+    b.textContent = audio.muted ? '🔇' : '🔊';
+    b.title = audio.muted ? 'Sound off (M)' : 'Sound on (M)';
+  });
+}
+
+function wireAudioUI() {
+  // Browsers require a user gesture before audio can start.
+  const unlock = () => {
+    audio.init().then(() => {
+      audio.resume();
+      if (state === State.MENU) audio.playMusic('music_menu');
+      updateMuteUI();
+    });
+  };
+  window.addEventListener('pointerdown', unlock, { once: true });
+  window.addEventListener('keydown', unlock, { once: true });
+
+  // Subtle tick on any button / tab press.
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.btn, .tab, .btn-mute')) audio.click();
+  });
+
+  const toggle = () => { audio.toggleMute(); updateMuteUI(); };
+  document.querySelectorAll('.btn-mute').forEach(b => b.addEventListener('click', toggle));
+  window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'm') { toggle(); }
+  });
+  updateMuteUI();
 }
 
 // =====================================================
@@ -514,3 +661,18 @@ function wireUI() {
 setupScene();
 wireUI();
 loop(performance.now());
+
+// Debug / test hook
+window.__sky = {
+  audio,
+  get fx() { return fx; },
+  get scene() { return scene; },
+  get camera() { return camera; },
+  get state() { return state; },
+  get controller() { return controller; },
+  get plane() { return plane; },
+  get missions() { return missions; },
+  get activeMinigame() { return activeMinigame; },
+  startGame,
+  startMinigame,
+};

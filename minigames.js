@@ -3,7 +3,7 @@
 // =====================================================
 
 import * as THREE from 'three';
-import { terrainHeight, WORLD_SIZE } from './world.js?v=4';
+import { terrainHeight, WORLD_SIZE } from './world.js?v=7';
 
 // Swept ring intersection: did segment p0→p1 cross the disc at (center, normal, radius)?
 function sweptRingHit(p0, p1, center, normal, radius) {
@@ -35,6 +35,9 @@ class Minigame {
     this.done = false;
     this.objective = '';
     this.lastPlanePos = plane.position.clone();
+    this._sfxQueue = [];   // drained by the main loop -> audio.play()
+    this._fxQueue = [];    // drained by the main loop -> fx.* (particles)
+    this._voQueue = [];    // drained by the main loop -> audio.playVoice()
   }
   cleanup() {
     this.scene.remove(this.group);
@@ -186,6 +189,8 @@ export class RingRun extends Minigame {
       this.timeLeft = Math.min(this.timeLeft + 6, 90);
       this.currentRing++;
       this._toast = `+${pts} • RING ${this.currentRing}/${this.rings.length}`;
+      this._sfxQueue.push('chime');
+      this._fxQueue.push({ kind: 'ring', pos: [ring.position.x, ring.position.y, ring.position.z], color: 0x00ff88 });
 
       if (this.currentRing >= this.rings.length) {
         this.score += 500;
@@ -284,6 +289,8 @@ export class CanyonDash extends Minigame {
         this.score += 150 + altBonus;
         if (altBonus) this.bonus += altBonus;
         this._toast = altBonus ? `+250 LOW PASS` : `+150 GATE`;
+        this._sfxQueue.push('chime');
+        this._fxQueue.push({ kind: 'ring', pos: [g.center.x, planePos.y, g.center.z], color: 0xff9500 });
         if (this.passedCount === this.gates.length) {
           this.score += 600;
           this.finish('COURSE CLEARED');
@@ -378,15 +385,9 @@ export class PrecisionDrop extends Minigame {
         this.score += points;
         this.hits.push({ dist: distXZ, points });
         this._toast = points > 0 ? `+${points} ${distXZ < 26 ? 'BULLSEYE!' : 'HIT'}` : 'MISS';
-        // Explosion marker
-        const ex = new THREE.Mesh(
-          new THREE.SphereGeometry(8, 8, 6),
-          new THREE.MeshBasicMaterial({ color: 0xff7700, transparent: true, opacity: 0.8 })
-        );
-        ex.position.copy(b.position);
-        ex.position.y += 4;
-        ex.userData.life = 1;
-        this.group.add(ex);
+        this._sfxQueue.push('explosion');
+        this._fxQueue.push({ kind: 'explosion', pos: [b.position.x, b.position.y + 4, b.position.z], size: points >= 1000 ? 1.5 : 1.0 });
+        if (points >= 1000) { this._sfxQueue.push('chime'); this._voQueue.push('bullseye'); }
         this.group.remove(b);
         this.bombs.splice(i, 1);
         if (this.bombsLeft === 0 && this.bombs.length === 0) {
@@ -465,15 +466,40 @@ export class Dogfight extends Minigame {
 
   fireBullet(planePos, planeQuat) {
     const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(planeQuat);
+    // Elongated glowing tracer round (length aligned with travel direction)
+    const geo = new THREE.CylinderGeometry(0.5, 0.5, 22, 6);
+    geo.rotateX(Math.PI / 2);
     const bullet = new THREE.Mesh(
-      new THREE.SphereGeometry(0.6, 6, 6),
-      new THREE.MeshBasicMaterial({ color: 0xffff00 })
+      geo,
+      new THREE.MeshBasicMaterial({ color: 0xfff070 })
     );
     bullet.position.copy(planePos).addScaledVector(forward, 6);
+    bullet.quaternion.copy(planeQuat);
     bullet.userData.vel = forward.clone().multiplyScalar(400);
     bullet.userData.life = 2.5;
+    // Glowing tracer trail (visible even when fired straight away from camera)
+    const N = 10;
+    const tg = new THREE.BufferGeometry();
+    const tp = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) { tp[i * 3] = bullet.position.x; tp[i * 3 + 1] = bullet.position.y; tp[i * 3 + 2] = bullet.position.z; }
+    tg.setAttribute('position', new THREE.BufferAttribute(tp, 3));
+    const trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ color: 0xffe060, transparent: true, opacity: 0.8 }));
+    this.group.add(trail);
+    bullet.userData.trail = { line: trail, pos: tp, n: N };
     this.group.add(bullet);
     this.bullets.push(bullet);
+  }
+
+  _dropBullet(b, i) {
+    this.group.remove(b);
+    b.geometry.dispose();
+    b.material.dispose();
+    if (b.userData.trail) {
+      this.group.remove(b.userData.trail.line);
+      b.userData.trail.line.geometry.dispose();
+      b.userData.trail.line.material.dispose();
+    }
+    this.bullets.splice(i, 1);
   }
 
   getStats() {
@@ -507,33 +533,38 @@ export class Dogfight extends Minigame {
       const b = this.bullets[i];
       b.userData.life -= dt;
       if (b.userData.life <= 0) {
-        this.group.remove(b);
-        this.bullets.splice(i, 1);
+        this._dropBullet(b, i);
         continue;
       }
       b.position.addScaledVector(b.userData.vel, dt);
+
+      // Slide the tracer trail to follow the round
+      const tr = b.userData.trail;
+      if (tr) {
+        for (let k = tr.n - 1; k > 0; k--) {
+          tr.pos[k * 3] = tr.pos[(k - 1) * 3];
+          tr.pos[k * 3 + 1] = tr.pos[(k - 1) * 3 + 1];
+          tr.pos[k * 3 + 2] = tr.pos[(k - 1) * 3 + 2];
+        }
+        tr.pos[0] = b.position.x; tr.pos[1] = b.position.y; tr.pos[2] = b.position.z;
+        tr.line.geometry.attributes.position.needsUpdate = true;
+      }
 
       // Check hits
       for (const enemy of this.enemies) {
         if (!enemy.userData.alive) continue;
         if (b.position.distanceTo(enemy.position) < 8) {
           enemy.userData.health--;
-          this.group.remove(b);
-          this.bullets.splice(i, 1);
+          this._dropBullet(b, i);
           if (enemy.userData.health <= 0) {
             enemy.userData.alive = false;
             enemy.visible = false;
             this.kills++;
             this.score += 600;
-            // Big explosion
-            const ex = new THREE.Mesh(
-              new THREE.SphereGeometry(12, 10, 8),
-              new THREE.MeshBasicMaterial({ color: 0xff5500, transparent: true, opacity: 0.9 })
-            );
-            ex.position.copy(enemy.position);
-            ex.userData.life = 1;
-            this.group.add(ex);
+            this._fxQueue.push({ kind: 'explosion', pos: [enemy.position.x, enemy.position.y, enemy.position.z], size: 1.7 });
             this._toast = `+600 SPLASH ONE!`;
+            this._sfxQueue.push('explosion', 'chime');
+            if (this.kills === 1) this._voQueue.push('splash');
             if (this.kills >= this.targetKills) {
               this.score += 1000;
               this.finish('ALL ENEMIES DOWN');
