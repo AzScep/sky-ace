@@ -1,0 +1,24 @@
+{
+  "name": "flight-simulator",
+  "version": "1.0.0",
+  "description": "A browser-based 3D flight simulator with four open-world minigames, scoring, and a ranked leaderboard. Built with Three.js (loaded via CDN — no install step).",
+  "main": "game.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AzScep/sky-ace.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/AzScep/sky-ace/issues"
+  },
+  "homepage": "https://github.com/AzScep/sky-ace#readme",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
+  }
+}
