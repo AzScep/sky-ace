@@ -18,6 +18,16 @@ const FILES = {
   chime:        { src: 'assets/audio/chime_success.mp3',  gain: 0.55 },
 };
 
+// Pilot / AWACS radio callouts (already normalized loud)
+const VOICE = {
+  takeoff:  'assets/audio/vo_takeoff.mp3',
+  combat:   'assets/audio/vo_combat.mp3',
+  splash:   'assets/audio/vo_splash.mp3',
+  bullseye: 'assets/audio/vo_bullseye.mp3',
+  complete: 'assets/audio/vo_complete.mp3',
+  failed:   'assets/audio/vo_failed.mp3',
+};
+
 const MUSIC_TRACKS = ['music_menu', 'music_action'];
 const MUTE_KEY = 'sky_ace_muted';
 
@@ -31,6 +41,9 @@ class AudioManager {
     this.masterGain = null;
     this.musicGain = null;
     this.sfxGain = null;
+    this.voiceGain = null;
+    this.voiceBuffers = {};
+    this._voEndTime = 0;
     this._loops = {};        // name -> { src, gain }
     this._loadPromise = null;
   }
@@ -47,21 +60,54 @@ class AudioManager {
     this.musicGain.connect(this.masterGain);
     this.sfxGain = this.ctx.createGain();
     this.sfxGain.connect(this.masterGain);
+    this.voiceGain = this.ctx.createGain();
+    this.voiceGain.connect(this.masterGain);
     this._loadPromise = this._loadAll();
     return this._loadPromise;
   }
 
+  async _load(src) {
+    try {
+      const res = await fetch(src);
+      const arr = await res.arrayBuffer();
+      return await this.ctx.decodeAudioData(arr);
+    } catch (e) {
+      console.warn('[audio] failed to load', src, e);
+      return null;
+    }
+  }
+
   async _loadAll() {
-    await Promise.all(Object.entries(FILES).map(async ([name, def]) => {
-      try {
-        const res = await fetch(def.src);
-        const arr = await res.arrayBuffer();
-        this.buffers[name] = await this.ctx.decodeAudioData(arr);
-      } catch (e) {
-        console.warn('[audio] failed to load', name, e);
-      }
-    }));
+    const jobs = [];
+    for (const [name, def] of Object.entries(FILES)) {
+      jobs.push(this._load(def.src).then((b) => { if (b) this.buffers[name] = b; }));
+    }
+    for (const [name, src] of Object.entries(VOICE)) {
+      jobs.push(this._load(src).then((b) => { if (b) this.voiceBuffers[name] = b; }));
+    }
+    await Promise.all(jobs);
     this.ready = true;
+  }
+
+  // Pilot radio line — ducks music while speaking; ignores overlap.
+  playVoice(name) {
+    if (!this.ready || !this.ctx) return;
+    const buf = this.voiceBuffers[name];
+    if (!buf) return;
+    const now = this.ctx.currentTime;
+    if (now < this._voEndTime) return;   // one radio call at a time
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.voiceGain);
+    src.start(0);
+    const dur = buf.duration;
+    this._voEndTime = now + dur + 0.1;
+    const g = this.musicGain.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(g.value, now);
+    g.linearRampToValueAtTime(0.28, now + 0.12);
+    g.setValueAtTime(0.28, now + dur);
+    g.linearRampToValueAtTime(1.0, now + dur + 0.4);
   }
 
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }

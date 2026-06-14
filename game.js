@@ -3,11 +3,12 @@
 // =====================================================
 
 import * as THREE from 'three';
-import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=5';
-import { createPlane, PlaneController, Input } from './plane.js?v=5';
-import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=5';
-import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=5';
-import { audio } from './audio.js?v=5';
+import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=7';
+import { createPlane, PlaneController, Input } from './plane.js?v=7';
+import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=7';
+import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=7';
+import { audio } from './audio.js?v=7';
+import { FX } from './fx.js?v=7';
 
 // ----- State -----
 const State = {
@@ -29,6 +30,7 @@ let totalScore = 0;
 let cameraMode = 0;           // 0 = chase, 1 = cockpit, 2 = cinematic
 let lastTime = performance.now();
 let minimapCtx;
+let fx;                       // particle FX system
 let prevBoost = false;        // for boost-whoosh edge detection
 
 // =====================================================
@@ -45,6 +47,7 @@ function setupScene() {
   renderer.setClearColor(0x88a8c8);
 
   world = buildWorld(scene);
+  fx = new FX(scene);
 
   plane = createPlane();
   scene.add(plane);
@@ -175,6 +178,7 @@ function startMinigame(mission) {
   document.getElementById('mg-objective').textContent = activeMinigame.objective;
   showToast(`▶ ${mission.name}`);
   audio.playMusic('music_action');
+  if (mission.mode === 'dogfight' || mission.mode === 'bomb') audio.playVoice('combat');
 }
 
 function endMinigame() {
@@ -202,6 +206,8 @@ function handleFire() {
   } else if (activeMinigame.mode === 'dogfight') {
     activeMinigame.fireBullet(plane.position.clone(), plane.quaternion.clone());
     audio.play('cannon', { rate: 0.95 + Math.random() * 0.1 });
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
+    fx.muzzle(plane.position.clone().addScaledVector(fwd, 6), fwd);
   }
 }
 
@@ -233,7 +239,9 @@ function showToast(msg) {
 
 function showResult(mode, score, reason, result) {
   audio.stopAllMusic(0.5);
-  audio.play('fanfare');
+  const win = reason !== 'TIME UP' && result.grade !== 'D';
+  if (win) audio.play('fanfare');
+  audio.playVoice(win ? 'complete' : 'failed');
   const el = document.getElementById('result-screen');
   document.getElementById('rank-display').textContent = result.grade;
   document.getElementById('rank-display').className = `rank-display grade-${result.grade}`;
@@ -424,6 +432,32 @@ function loop(now) {
     updateHUD();
     drawMinimap();
     updateAudio(dt);
+    fx.update(dt);
+
+    // Particles + radio voice emitted from inside minigame logic
+    if (activeMinigame) {
+      for (const e of activeMinigame._fxQueue) {
+        const p = new THREE.Vector3(e.pos[0], e.pos[1], e.pos[2]);
+        if (e.kind === 'explosion') fx.explosion(p, e.size || 1);
+        else if (e.kind === 'ring') fx.ringBurst(p, e.color || 0x00ff88);
+      }
+      activeMinigame._fxQueue.length = 0;
+      for (const v of activeMinigame._voQueue) audio.playVoice(v);
+      activeMinigame._voQueue.length = 0;
+    }
+
+    // Afterburner exhaust while boosting
+    if (controller.boosting) {
+      const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
+      fx.exhaust(plane.position.clone().addScaledVector(fwd, -5), fwd.clone().multiplyScalar(-26));
+    }
+
+    // Water surface drifts (sky is a static equirectangular background).
+    if (world.water && world.water.material.map) {
+      const m = world.water.material.map;
+      const t = now / 1000;
+      m.offset.set((t * 0.012) % 1, (t * 0.007) % 1);
+    }
   }
 
   renderer.render(scene, camera);
@@ -439,7 +473,11 @@ function startGame() {
   lastTime = performance.now();
   controller.reset(new THREE.Vector3(0, 400, 0));
   totalScore = 0;
-  audio.init().then(() => { audio.resume(); audio.stopAllMusic(0.4); });
+  audio.init().then(() => {
+    audio.resume();
+    audio.stopAllMusic(0.4);
+    setTimeout(() => audio.playVoice('takeoff'), 700);
+  });
 }
 
 function togglePause() {
@@ -594,6 +632,9 @@ loop(performance.now());
 // Debug / test hook
 window.__sky = {
   audio,
+  get fx() { return fx; },
+  get scene() { return scene; },
+  get camera() { return camera; },
   get state() { return state; },
   get controller() { return controller; },
   get plane() { return plane; },
