@@ -88,8 +88,11 @@ export class RingRun extends Minigame {
     playerForward.normalize();
 
     const count = 10;
+    const BOUND = WORLD_SIZE * 0.42;   // keep the whole course inside the flyable area
+    const clampXZ = (p) => { p.x = Math.max(-BOUND, Math.min(BOUND, p.x)); p.z = Math.max(-BOUND, Math.min(BOUND, p.z)); };
     let pos = plane.position.clone().addScaledVector(playerForward, 400);
     pos.y = Math.max(pos.y, 250);   // ensure first ring is at a reasonable altitude
+    clampXZ(pos);
     let dir = playerForward.clone();
 
     for (let i = 0; i < count; i++) {
@@ -100,6 +103,12 @@ export class RingRun extends Minigame {
         dir.y = vClimb;
         dir.normalize();
         pos = pos.clone().addScaledVector(dir, 380 + Math.random() * 160);
+        if (Math.abs(pos.x) > BOUND || Math.abs(pos.z) > BOUND) {
+          clampXZ(pos);
+          dir.set(-pos.x, 0, -pos.z).normalize();   // steer the course back toward the origin
+          dir.y = (Math.random() - 0.5) * 0.3;
+          dir.normalize();
+        }
         pos.y = Math.max(200, Math.min(700, pos.y));
       }
 
@@ -223,7 +232,10 @@ export class CanyonDash extends Minigame {
     const flagMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
 
     const count = 14;
-    let pos = anchor.clone().add(new THREE.Vector3(0, 0, 0));
+    const BOUND = WORLD_SIZE * 0.42;   // keep the gate course inside the flyable area
+    let pos = anchor.clone();
+    pos.x = Math.max(-BOUND, Math.min(BOUND, pos.x));
+    pos.z = Math.max(-BOUND, Math.min(BOUND, pos.z));
     let dir = new THREE.Vector3(0, 0, 1);
     for (let i = 0; i < count; i++) {
       const turn = (Math.random() - 0.5) * 0.8;
@@ -231,6 +243,11 @@ export class CanyonDash extends Minigame {
       dir.y = 0;
       dir.normalize();
       pos = pos.clone().addScaledVector(dir, 400);
+      if (Math.abs(pos.x) > BOUND || Math.abs(pos.z) > BOUND) {
+        pos.x = Math.max(-BOUND, Math.min(BOUND, pos.x));
+        pos.z = Math.max(-BOUND, Math.min(BOUND, pos.z));
+        dir.set(-pos.x, 0, -pos.z).normalize();   // steer the course back toward the origin
+      }
       const ground = terrainHeight(pos.x, pos.z);
       pos.y = ground + 30;
 

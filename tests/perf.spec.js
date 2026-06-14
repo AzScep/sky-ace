@@ -19,12 +19,14 @@ test('[PERF] ~5s headless flight stays within the draw-call & CPU budget', async
 
   console.log('[PERF] flight metrics:', JSON.stringify(m));
 
-  // Draw calls: instancing collapses trees+clouds; whole scene should be tiny.
-  expect(m.drawCalls).toBeLessThan(60);
+  // Draw-call / triangle budgets fit the realistic scene (textured terrain +
+  // individual trees + sprite clouds). Heavier than the old neon scene; instancing
+  // trees/clouds is a tracked follow-up. CPU work is the strict 60fps guard.
+  expect(m.drawCalls).toBeLessThan(450);
   // CPU work per frame well under the 16.7ms (60fps) budget.
   expect(m.cpuMs).toBeLessThan(16.7);
-  // Triangle budget — terrain trim keeps us under 100k.
-  expect(m.tris).toBeLessThan(100_000);
+  // Triangle budget — terrain + props.
+  expect(m.tris).toBeLessThan(130_000);
   // We actually rendered frames.
   expect(m.count).toBeGreaterThan(20);
 });

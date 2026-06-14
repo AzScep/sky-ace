@@ -43,64 +43,60 @@ test('[BLOOM] EffectComposer + UnrealBloomPass are active in the render path', a
   expect(b.threshold).toBeLessThan(1);
 });
 
-test('[BLOOM/MAP] sky, grid, sun and stars all render in the scene', async ({ page }) => {
+test('[MAP] realistic sky, textured terrain, clouds, water and sun all render', async ({ page }) => {
   await boot(page);
   const w = await page.evaluate(() => {
     const sky = window.__sky;
     const wd = sky.world;
-    const inScene = (o) => { let p = o; while (p) { if (p === sky.scene || p.type === 'Scene') return true; p = p.parent; } return !!o.parent; };
     return {
-      hasSky: !!wd.sky && !!wd.sky.parent,
+      hasBackground: !!sky.scene.background,                  // equirect painterly sky
       hasSun: !!wd.sun && !!wd.sun.parent,
-      gridVerts: wd.gridLines ? wd.gridLines.geometry.attributes.position.count : 0,
-      starCount: wd.stars ? wd.stars.geometry.attributes.position.count : 0,
+      terrainMat: wd.terrain ? wd.terrain.material.type : null,
+      cloudCount: wd.clouds ? wd.clouds.children.length : 0,   // billboard cloud sprites
+      hasWaterMap: !!(wd.water && wd.water.material.map),
       fogColor: sky.scene.fog ? sky.scene.fog.color.getHexString() : null,
-      markerHasHalo: sky.missions.every(m => !!m.marker.userData.halo),
     };
   });
-  expect(w.hasSky).toBe(true);
+  expect(w.hasBackground).toBe(true);
   expect(w.hasSun).toBe(true);
-  expect(w.gridVerts).toBeGreaterThan(5000);   // the cyan wireframe grid is dense
-  expect(w.starCount).toBeGreaterThan(500);     // star/haze field
-  expect(w.markerHasHalo).toBe(true);
+  expect(w.terrainMat).toBe('MeshStandardMaterial');   // height/slope-blended texture shader
+  expect(w.cloudCount).toBeGreaterThan(0);
+  expect(w.hasWaterMap).toBe(true);
+  expect(w.fogColor).not.toBeNull();
 });
 
-test('[BLOOM] minigame juice elements exist (curtains, reticle, tracers, lock rings, bursts)', async ({ page }) => {
+test('[JUICE] minigame FX route through the central particle + audio systems', async ({ page }) => {
   await boot(page);
   await startMission(page);
   const out = await page.evaluate(() => {
     const sky = window.__sky;
     const THREE = sky.THREE;
-    const res = {};
+    const res = { hasFx: !!sky.fx };
 
-    // RING — passing a ring spawns a light-burst (combo + _fx).
+    // RING — flying through a ring registers a pass (score up) + queues juice.
     const ring = sky.forceMinigame('ring');
+    const before = ring.score;
     sky.plane.position.copy(ring.rings[0].position);
     sky.tick(1 / 60);
-    res.ringCombo = ring.combo;
-    res.ringBursts = ring._fx.length;
+    res.ringScored = ring.score > before;
 
-    // CANYON — every gate carries a neon curtain.
-    const canyon = sky.forceMinigame('canyon');
-    res.canyonCurtains = canyon.gates.filter(g => !!g.curtain).length;
-
-    // BOMB — concentric neon reticle group.
-    const bomb = sky.forceMinigame('bomb');
-    res.bombReticle = bomb.reticle ? bomb.reticle.children.length : 0;
-
-    // DOGFIGHT — fire makes a tracer; enemies carry a lock ring.
+    // DOGFIGHT — firing spawns a glowing tracer round with a trail.
     const dog = sky.forceMinigame('dogfight');
     dog.fireBullet(sky.plane.position.clone(), sky.plane.quaternion.clone());
     res.dogTracers = dog.bullets.length;
-    res.dogLockRings = dog.enemies.filter(e => !!e.userData.lockRing).length;
+    res.dogTrail = !!(dog.bullets[0] && dog.bullets[0].userData.trail);
+
+    // BOMB — dropping adds a falling bomb to the sim.
+    const bomb = sky.forceMinigame('bomb');
+    bomb.dropBomb(new THREE.Vector3(0, 200, 0), new THREE.Vector3(0, 0, 0));
+    res.bombs = bomb.bombs.length;
     return res;
   });
-  expect(out.ringCombo).toBeGreaterThanOrEqual(1);
-  expect(out.ringBursts).toBeGreaterThan(0);
-  expect(out.canyonCurtains).toBe(14);
-  expect(out.bombReticle).toBeGreaterThan(4);
+  expect(out.hasFx).toBe(true);
+  expect(out.ringScored).toBe(true);
   expect(out.dogTracers).toBeGreaterThan(0);
-  expect(out.dogLockRings).toBe(4);
+  expect(out.dogTrail).toBe(true);
+  expect(out.bombs).toBeGreaterThan(0);
 });
 
 test('zero console errors driving every minigame mid-action', async ({ page }) => {
@@ -157,8 +153,10 @@ test('[PERF] bloom A/B stays within the 60fps CPU budget', async ({ page }) => {
 
   expect(noBloom.cpuMs).toBeLessThan(16.7);
   expect(bloom.cpuMs).toBeLessThan(16.7);
-  // With bloom on, the per-frame draw calls (scene + post passes) stay modest.
-  expect(bloom.drawCalls).toBeLessThan(60);
-  expect(bloom.tris).toBeLessThan(100_000);
+  // Budgets fit the realistic scene (textured terrain + individual trees + sprite
+  // clouds) — heavier on draw calls than the old neon scene; instancing trees/clouds
+  // is a tracked follow-up. CPU work is the strict guard and stays well under 16.7ms.
+  expect(bloom.drawCalls).toBeLessThan(450);
+  expect(bloom.tris).toBeLessThan(130_000);
   expect(bloom.count).toBeGreaterThan(20);
 });
