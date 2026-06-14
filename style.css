@@ -475,6 +475,16 @@ html, body {
   display: block;
 }
 
+#screen-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 8;
+  mix-blend-mode: screen;
+}
+
 .hud {
   position: absolute;
   pointer-events: none;

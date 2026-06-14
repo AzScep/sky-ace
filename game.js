@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=7';
 import { createPlane, PlaneController, Input } from './plane.js?v=7';
-import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=7';
+import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=8';
 import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=7';
 import { audio } from './audio.js?v=7';
 import { FX } from './fx.js?v=7';
@@ -32,6 +32,7 @@ let lastTime = performance.now();
 let minimapCtx;
 let fx;                       // particle FX system
 let prevBoost = false;        // for boost-whoosh edge detection
+let shake = 0;                // current camera-shake magnitude
 
 // =====================================================
 // Setup
@@ -124,6 +125,30 @@ function updateCamera(dt) {
   const smooth = cameraMode === 1 ? 1 : 0.15;
   camera.position.lerp(target, smooth);
   camera.lookAt(lookAt);
+
+  // Impact shake
+  if (shake > 0.001) {
+    camera.position.x += (Math.random() - 0.5) * shake;
+    camera.position.y += (Math.random() - 0.5) * shake;
+    camera.position.z += (Math.random() - 0.5) * shake;
+    shake *= Math.pow(0.0016, dt);   // fast decay (~halves every ~70ms)
+  } else {
+    shake = 0;
+  }
+}
+
+function addShake(amount) { shake = Math.min(3.0, shake + amount); }
+
+let flashEl;
+function flashScreen(strength = 0.3, color = '#ffffff') {
+  if (!flashEl) flashEl = document.getElementById('screen-flash');
+  if (!flashEl) return;
+  flashEl.style.transition = 'none';
+  flashEl.style.background = color;
+  flashEl.style.opacity = String(strength);
+  void flashEl.offsetWidth;            // reflow so the fade restarts
+  flashEl.style.transition = 'opacity 0.4s ease-out';
+  flashEl.style.opacity = '0';
 }
 
 function cycleCamera() {
@@ -208,6 +233,7 @@ function handleFire() {
     audio.play('cannon', { rate: 0.95 + Math.random() * 0.1 });
     const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
     fx.muzzle(plane.position.clone().addScaledVector(fwd, 6), fwd);
+    addShake(0.13);
   }
 }
 
@@ -240,7 +266,7 @@ function showToast(msg) {
 function showResult(mode, score, reason, result) {
   audio.stopAllMusic(0.5);
   const win = reason !== 'TIME UP' && result.grade !== 'D';
-  if (win) audio.play('fanfare');
+  if (win) { audio.play('fanfare'); flashScreen(0.28, '#00ff88'); }
   audio.playVoice(win ? 'complete' : 'failed');
   const el = document.getElementById('result-screen');
   document.getElementById('rank-display').textContent = result.grade;
@@ -438,8 +464,15 @@ function loop(now) {
     if (activeMinigame) {
       for (const e of activeMinigame._fxQueue) {
         const p = new THREE.Vector3(e.pos[0], e.pos[1], e.pos[2]);
-        if (e.kind === 'explosion') fx.explosion(p, e.size || 1);
-        else if (e.kind === 'ring') fx.ringBurst(p, e.color || 0x00ff88);
+        if (e.kind === 'explosion') {
+          const size = e.size || 1;
+          fx.explosion(p, size);
+          const atten = THREE.MathUtils.clamp(1 - p.distanceTo(camera.position) / 700, 0.12, 1);
+          addShake(1.3 * size * atten);
+          if (size >= 1.4) flashScreen(0.2 * atten, '#ffd9a0');
+        } else if (e.kind === 'ring') {
+          fx.ringBurst(p, e.color || 0x00ff88);
+        }
       }
       activeMinigame._fxQueue.length = 0;
       for (const v of activeMinigame._voQueue) audio.playVoice(v);

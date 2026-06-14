@@ -466,15 +466,40 @@ export class Dogfight extends Minigame {
 
   fireBullet(planePos, planeQuat) {
     const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(planeQuat);
+    // Elongated glowing tracer round (length aligned with travel direction)
+    const geo = new THREE.CylinderGeometry(0.5, 0.5, 22, 6);
+    geo.rotateX(Math.PI / 2);
     const bullet = new THREE.Mesh(
-      new THREE.SphereGeometry(0.6, 6, 6),
-      new THREE.MeshBasicMaterial({ color: 0xffff00 })
+      geo,
+      new THREE.MeshBasicMaterial({ color: 0xfff070 })
     );
     bullet.position.copy(planePos).addScaledVector(forward, 6);
+    bullet.quaternion.copy(planeQuat);
     bullet.userData.vel = forward.clone().multiplyScalar(400);
     bullet.userData.life = 2.5;
+    // Glowing tracer trail (visible even when fired straight away from camera)
+    const N = 10;
+    const tg = new THREE.BufferGeometry();
+    const tp = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) { tp[i * 3] = bullet.position.x; tp[i * 3 + 1] = bullet.position.y; tp[i * 3 + 2] = bullet.position.z; }
+    tg.setAttribute('position', new THREE.BufferAttribute(tp, 3));
+    const trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ color: 0xffe060, transparent: true, opacity: 0.8 }));
+    this.group.add(trail);
+    bullet.userData.trail = { line: trail, pos: tp, n: N };
     this.group.add(bullet);
     this.bullets.push(bullet);
+  }
+
+  _dropBullet(b, i) {
+    this.group.remove(b);
+    b.geometry.dispose();
+    b.material.dispose();
+    if (b.userData.trail) {
+      this.group.remove(b.userData.trail.line);
+      b.userData.trail.line.geometry.dispose();
+      b.userData.trail.line.material.dispose();
+    }
+    this.bullets.splice(i, 1);
   }
 
   getStats() {
@@ -508,19 +533,29 @@ export class Dogfight extends Minigame {
       const b = this.bullets[i];
       b.userData.life -= dt;
       if (b.userData.life <= 0) {
-        this.group.remove(b);
-        this.bullets.splice(i, 1);
+        this._dropBullet(b, i);
         continue;
       }
       b.position.addScaledVector(b.userData.vel, dt);
+
+      // Slide the tracer trail to follow the round
+      const tr = b.userData.trail;
+      if (tr) {
+        for (let k = tr.n - 1; k > 0; k--) {
+          tr.pos[k * 3] = tr.pos[(k - 1) * 3];
+          tr.pos[k * 3 + 1] = tr.pos[(k - 1) * 3 + 1];
+          tr.pos[k * 3 + 2] = tr.pos[(k - 1) * 3 + 2];
+        }
+        tr.pos[0] = b.position.x; tr.pos[1] = b.position.y; tr.pos[2] = b.position.z;
+        tr.line.geometry.attributes.position.needsUpdate = true;
+      }
 
       // Check hits
       for (const enemy of this.enemies) {
         if (!enemy.userData.alive) continue;
         if (b.position.distanceTo(enemy.position) < 8) {
           enemy.userData.health--;
-          this.group.remove(b);
-          this.bullets.splice(i, 1);
+          this._dropBullet(b, i);
           if (enemy.userData.health <= 0) {
             enemy.userData.alive = false;
             enemy.visible = false;

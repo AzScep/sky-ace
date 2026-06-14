@@ -75,6 +75,10 @@ Build 2.2 adds juice and a voice layer:
   entry, "Splash one!", "Direct hit!", mission complete / failed), with the music
   ducking under the voice.
 
+Build 2.3 adds game-feel polish: **camera screen shake** on explosions and cannon
+fire (distance-attenuated), **glowing bullet tracers** with fading trails, and a
+**critical-hit screen flash** (warm on big hits, green on mission success).
+
 Audio uses the Web Audio API and unlocks on first interaction (browsers block
 autoplay). Toggle it any time with the on-screen speaker button or the `M` key;
 the preference is saved to `localStorage`.
