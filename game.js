@@ -77,6 +77,11 @@ let _trail = null;               // wingtip Trail (fx.js)
 let _hitStop = 0;                // seconds of hit-stop remaining (loop-only, not tick)
 let _vignetteEl = null;          // #boost-vignette DOM element (lazy-grabbed)
 let _lastMinigameMode = null;    // for Retry button
+let _lastResult = null;          // { reason, win, completed } of the last minigame — read by tests
+// ---- crash / terrain-collision state ----
+const CRASH_MARGIN = 6;          // crash when the plane dips within this of terrain height
+let _crashCount = 0;             // free-flight crashes (respawns) — read by tests via __sky.crashCount
+let _crashCooldown = 0;          // seconds; blocks re-triggering crash while respawning/recovering
 // ---- camera FOV smoothing (module-level, no per-frame alloc) ----
 let _fovCurrent = 70;
 let _fovTarget  = 70;
@@ -321,6 +326,32 @@ function resetFlight() {
   showToast('FLIGHT RESET');
 }
 
+// Terrain collision. In a minigame it ends the run as CRASHED; in free flight it
+// respawns you clear of the ground.
+function crash() {
+  fx.explosion(plane.position.clone(), 1.6);
+  addShake(1.6);
+  flashScreen(0.3, '#ff6a4d');
+  audio.playVoice('failed');
+
+  if (activeMinigame) {
+    // Real teeth for Canyon Dash + low passes: fly into terrain and you fail the run.
+    // No cooldown needed — endMinigame fires THIS same tick and leaves the MINIGAME state,
+    // so the crash check can't re-fire (arming it here would leak into the next free session).
+    activeMinigame.finish('CRASHED');
+    return;
+  }
+  // Free flight — no score to lose; respawn well above ground, level, at cruise.
+  _crashCooldown = 1.2;               // block re-trigger while the respawn lifts us clear
+  _crashCount++;
+  const ground = terrainHeight(plane.position.x, plane.position.z);
+  plane.position.y = ground + 250;
+  plane.quaternion.identity();
+  controller.velocity.set(0, 0, 0);
+  controller.speed = 120;            // re-derived into velocity next controller.update
+  showToast('CRASHED — RECOVERING');
+}
+
 // =====================================================
 // Mission detection & minigame lifecycle
 // =====================================================
@@ -373,15 +404,20 @@ function endMinigame() {
   const mode = activeMinigame.mode;
   const score = activeMinigame.score;
   const reason = activeMinigame.finishReason || 'COMPLETE';
+  // Single source of truth: a run counts as completed only if it neither timed out nor
+  // crashed. `win` (showResult) and the mission-cleared marking both derive from this, so
+  // the landmine-#1 "CRASHED reads as a win" bug can't recur in one place but not another.
+  const completed = reason !== 'TIME UP' && reason !== 'CRASHED';
   const mgSummary = activeMinigame.getSummary();
 
   const result = addScore(mode, score);
   totalScore += score;
   _lastMinigameMode = mode;
 
-  // Mark the mission as cleared and give its marker a distinct "done" look.
+  // Mark the mission cleared + give its marker the "done" look ONLY on a genuine completion.
+  // A crash or timeout must NOT retire the mission (waypoint keeps guiding you back to retry).
   const mission = activeMinigame._mission;
-  if (mission) {
+  if (mission && completed) {
     mission.cleared = true;
     const mk = mission.marker;
     if (mk.userData.beam) {
@@ -397,7 +433,7 @@ function endMinigame() {
     mode,
     score,
     grade: result.grade,
-    completed: reason !== 'TIME UP',
+    completed,
     finishReason: reason,
     ...mgSummary,
   };
@@ -408,7 +444,7 @@ function endMinigame() {
   document.getElementById('minigame-hud').classList.add('hidden');
 
   state = State.RESULT;
-  showResult(mode, score, reason, result, prog);
+  showResult(mode, score, reason, result, prog, completed);
 }
 
 function handleFire() {
@@ -460,9 +496,10 @@ function _xpForLevel(level) {
   return 300 * n + 75 * n * (n + 1);  // 75 = 150/2
 }
 
-function showResult(mode, score, reason, result, prog) {
+function showResult(mode, score, reason, result, prog, completed = reason !== 'TIME UP' && reason !== 'CRASHED') {
   audio.stopAllMusic(0.5);
-  const win = reason !== 'TIME UP' && result.grade !== 'D';
+  const win = completed && result.grade !== 'D';   // a crashed/timed-out run is never a win
+  _lastResult = { reason, win, completed };         // exposed via __sky.lastResult for regression tests
   if (win) { audio.play('fanfare'); flashScreen(0.28, '#00ff88'); }
   if (prog && prog.leveledUp) { audio.play('fanfare'); flashScreen(0.22, '#b14bff'); }
   audio.playVoice(win ? 'complete' : 'failed');
@@ -874,12 +911,11 @@ function simulate(dt) {
   // Advance onboarding coach (sim runs under the overlay)
   if (onboardingActive) _tickOnboardCoach();
 
-  // Soft floor — don't crash, just push up
+  // Terrain collision — the ground can kill you now (soft-floor removed).
+  // Cooldown prevents re-triggering every frame while the respawn lifts us clear.
+  if (_crashCooldown > 0) _crashCooldown -= dt;
   const ground = terrainHeight(plane.position.x, plane.position.z);
-  if (plane.position.y < ground + 8) {
-    plane.position.y = ground + 8;
-    // small score penalty if in dogfight? leave alone
-  }
+  if (_crashCooldown <= 0 && plane.position.y < ground + CRASH_MARGIN) crash();
   // Soft world bounds
   const lim = WORLD_SIZE * 0.45;
   plane.position.x = Math.max(-lim, Math.min(lim, plane.position.x));
@@ -1027,6 +1063,7 @@ function startGame() {
   lastTime = performance.now();
   controller.reset(new THREE.Vector3(0, 400, 0));
   totalScore = 0;
+  _crashCooldown = 0;   // clear any cooldown left armed by a crash in a prior session
 
   // Init / recycle the wingtip trail for this session
   if (_trail) { _trail.dispose(); _trail = null; }
@@ -1136,6 +1173,11 @@ function resultContinue() {
   const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
   plane.position.addScaledVector(fwd, 250);
   plane.position.y += 100;
+  // Never resume free flight buried in terrain: a CRASHED minigame leaves the plane at
+  // ground level, and the +100 nudge over tall terrain (Canyon Dash) can still be
+  // underground — which would instantly re-crash. Guarantee clear airspace.
+  const ground = terrainHeight(plane.position.x, plane.position.z);
+  plane.position.y = Math.max(plane.position.y, ground + 150);
 }
 
 function resultRetry() {
@@ -1145,27 +1187,10 @@ function resultRetry() {
 }
 
 function resultNext() {
-  document.getElementById('result-screen').classList.remove('active');
-  let nearest = null, bestDist = Infinity;
-  for (const m of missions) {
-    if (m.cleared) continue;
-    const d = plane.position.distanceTo(m.pos);
-    if (d < bestDist) { bestDist = d; nearest = m; }
-  }
-  if (nearest) {
-    // Teleport near the mission and start it
-    plane.position.copy(nearest.pos).add(new THREE.Vector3(0, 150, -250));
-    plane.quaternion.identity();
-    controller.velocity.set(0, 0, 0);
-    state = State.PLAYING;
-    startMinigame(nearest);
-  } else {
-    // All missions cleared — resume free flight
-    state = State.PLAYING;
-    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
-    plane.position.addScaledVector(fwd, 250);
-    plane.position.y += 100;
-  }
+  // Diegetic: no more teleport-skip. "Fly on" drops you back into open sky exactly
+  // like Continue — the #waypoint arrow guides you to the nearest uncleared mission,
+  // which you must actually fly to (checkMissions auto-enters at <100 m).
+  resultContinue();
 }
 
 function wireUI() {
@@ -1300,9 +1325,12 @@ window.__sky = {
   get plane() { return plane; },
   get controller() { return controller; },
   get missions() { return missions; },
+  get crashCount() { return _crashCount; },
+  get lastResult() { return _lastResult; },   // { reason, win, completed } — guards landmine #1
   get renderCalls() { return renderer.info.render.calls; },
   get renderTris() { return renderer.info.render.triangles; },
   get world() { return world; },
+  terrainHeight,   // module fn — tests use it to place the plane relative to the ground
   get scene() { return scene; },
   // Debug handle the test suite reads to confirm the bloom pass is live.
   get bloom() {

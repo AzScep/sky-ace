@@ -91,13 +91,21 @@ test('SHOT — Canyon Dash mid-action', async ({ page }) => {
   await page.evaluate(() => {
     const sky = window.__sky;
     const m = sky.forceMinigame('canyon');
-    // Sit just before the first gate, low, nose through the pylons.
+    // Sit just before the first gate, low, nose through the pylons. T3 removed the
+    // soft-floor, so this still must fly LEVEL with a little clearance — nosing down
+    // toward the gate over rising canyon terrain now crashes the run mid-capture.
     const g = m.gates[0];
+    sky.controller.speed = 0;                 // don't fly forward into terrain during settle
     sky.plane.position.copy(g.center).addScaledVector(g.dir, -120);
-    sky.plane.position.y = g.center.y + 10;
-    sky.plane.lookAt(g.center.clone().addScaledVector(g.dir, 200));
+    // Clear the terrain UNDER the plane (120u behind the gate, over different ground than the
+    // gate) — the crash check samples terrain at the plane's own XZ, not the gate's.
+    const groundHere = sky.terrainHeight(sky.plane.position.x, sky.plane.position.z);
+    sky.plane.position.y = Math.max(g.center.y + 40, groundHere + 60);
+    const aim = g.center.clone().addScaledVector(g.dir, 200);
+    aim.y = sky.plane.position.y;             // level gaze — no downward pitch into the ground
+    sky.plane.lookAt(aim);
   });
-  await settle(page, 16);
+  await settle(page, 4);
   await grab(page, 'canyon');
   assertNoErrors(errors, 'Errors during Canyon Dash capture');
 });
