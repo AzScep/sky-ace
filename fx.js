@@ -91,15 +91,18 @@ export class FX {
   // Layered afterburner plume.  intensity=0..1 (default 1) lets game.js
   // emit faintly at low throttle and skip entirely at 0.
   // 3 sprites per call; keep call frequency LOW in game.js (every 2-3 frames).
-  exhaust(pos, back, intensity = 1.0) {
+  // `tint` (a hex colour) recolours the whole plume — the equipped trail cosmetic.
+  // null/undefined keeps the default gold→cyan→magenta layered plume ('Off' trail).
+  exhaust(pos, back, intensity = 1.0, tint = null) {
     if (intensity <= 0) return;
     const i = Math.min(intensity, 1.0);
-    // Hot centre: gold #ffcf4d — small, bright
-    this._spawn('flare', pos, { scale: 4 * i,  maxLife: 0.18, grow: 1.8, opacity: 0.70 * i, vel: back, color: 0xffcf4d });
-    // Core:        cyan #00ffd5 — medium
-    this._spawn('flare', pos, { scale: 7 * i,  maxLife: 0.26, grow: 2.2, opacity: 0.48 * i, vel: back, color: 0x00ffd5 });
-    // Fringe:      magenta #ff2e88 — largest, faintest
-    this._spawn('flare', pos, { scale: 11 * i, maxLife: 0.36, grow: 2.8, opacity: 0.28 * i, vel: back, color: 0xff2e88 });
+    const cHot = tint ?? 0xffcf4d, cCore = tint ?? 0x00ffd5, cFringe = tint ?? 0xff2e88;
+    // Hot centre — small, bright
+    this._spawn('flare', pos, { scale: 4 * i,  maxLife: 0.18, grow: 1.8, opacity: 0.70 * i, vel: back, color: cHot });
+    // Core — medium
+    this._spawn('flare', pos, { scale: 7 * i,  maxLife: 0.26, grow: 2.2, opacity: 0.48 * i, vel: back, color: cCore });
+    // Fringe — largest, faintest
+    this._spawn('flare', pos, { scale: 11 * i, maxLife: 0.36, grow: 2.8, opacity: 0.28 * i, vel: back, color: cFringe });
   }
 
   update(dt) {

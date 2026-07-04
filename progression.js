@@ -29,6 +29,29 @@ export const MEDALS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Unlockables — level-gated cosmetics the hangar equips (no currency).
+// Colors are from the locked NEON palette (world.js). A skin tints the jet's
+// neon glow; a trail tints the exhaust plume ('off' = the default multi-colour plume).
+// ---------------------------------------------------------------------------
+export const UNLOCKS = {
+  skins: [
+    { id: 'magenta', name: 'Magenta',  color: 0xff2e88, level: 1  },
+    { id: 'cyan',    name: 'Ion Cyan', color: 0x00ffd5, level: 3  },
+    { id: 'gold',    name: 'Gold Ace', color: 0xffcf4d, level: 7  },
+    { id: 'void',    name: 'Void',     color: 0xb14bff, level: 12 },
+  ],
+  trails: [
+    { id: 'off',  name: 'Off',  color: null,     level: 1  },
+    { id: 'cyan', name: 'Cyan', color: 0x00ffd5, level: 1  },
+    { id: 'pink', name: 'Pink', color: 0xff2e88, level: 5  },
+    { id: 'gold', name: 'Gold', color: 0xffcf4d, level: 10 },
+  ],
+};
+
+// 'skins' → profile.equipped.skin, 'trails' → profile.equipped.trail
+const _SLOT = { skins: 'skin', trails: 'trail' };
+
+// ---------------------------------------------------------------------------
 // Profile helpers
 // ---------------------------------------------------------------------------
 
@@ -402,4 +425,41 @@ export function grantXp(n, reason = '') {
     rankTitle: profile.rankTitle,
     reason,
   };
+}
+
+/**
+ * Snapshot of the hangar: every skin/trail flagged unlocked by the player's level,
+ * plus what's currently equipped. Unlocks are derived from level (no currency, no
+ * persisted "unlocked" list needed), so newly-crossed thresholds show immediately.
+ * @returns {{ skins:Array, trails:Array, equipped:{skin:string,trail:string} }}
+ */
+export function getUnlocks() {
+  const profile = _loadProfile();
+  const level   = levelFromXp(profile.xp);
+  const mark    = (arr) => arr.map(it => ({ ...it, unlocked: level >= it.level }));
+  return {
+    skins:    mark(UNLOCKS.skins),
+    trails:   mark(UNLOCKS.trails),
+    equipped: { ...profile.equipped },
+  };
+}
+
+/**
+ * Equip an unlocked cosmetic. Rejects (no-op) if the kind/id is unknown or still
+ * level-locked. Persists and returns the resulting equipped map.
+ * @param {'skins'|'trails'} kind
+ * @param {string} id
+ * @returns {{skin:string,trail:string}}
+ */
+export function equip(kind, id) {
+  const profile = _loadProfile();
+  const slot  = _SLOT[kind];
+  const table = UNLOCKS[kind];
+  if (!slot || !table) return { ...profile.equipped };            // unknown kind
+  const item  = table.find(it => it.id === id);
+  const level = levelFromXp(profile.xp);
+  if (!item || level < item.level) return { ...profile.equipped }; // unknown or locked → reject
+  profile.equipped = { ...profile.equipped, [slot]: id };
+  _saveProfile(profile);
+  return { ...profile.equipped };
 }

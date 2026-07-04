@@ -43,6 +43,7 @@ function loadPlaneModel(planeGroup) {
       planeGroup.remove(child);
     }
     planeGroup.add(pivot);
+    applyEquipped();   // re-tint: the async GLB swap replaced the primitive we'd skinned
   }, undefined, () => { /* load failed — keep the primitive fallback, no throw */ });
 }
 
@@ -138,6 +139,7 @@ function setupScene() {
   plane = createPlane();
   scene.add(plane);
   loadPlaneModel(plane);   // async: swaps the Higgsfield GLB in over the primitive when ready
+  applyEquipped();         // skin the primitive now; loadPlaneModel re-applies once the GLB is in
   controller = new PlaneController(plane);
   controller.reset(new THREE.Vector3(0, 350, 0));
 
@@ -236,6 +238,8 @@ const _exhFwd  = new THREE.Vector3();
 const _exhPos  = new THREE.Vector3();
 const _exhBack = new THREE.Vector3();
 const _buzzMid = new THREE.Vector3();   // buzz-FX midpoint (avoid per-frame alloc)
+const _skinColor = new THREE.Color();   // scratch for the equipped-skin emissive tint
+let _equippedTrailColor = null;         // hex or null ('off') — tints the exhaust plume
 
 function updateCamera(dt) {
   const planePos  = plane.position;
@@ -1022,7 +1026,7 @@ function simulate(dt) {
     _exhFwd.set(0, 0, 1).applyQuaternion(plane.quaternion);
     _exhPos.copy(plane.position).addScaledVector(_exhFwd, -5);
     _exhBack.copy(_exhFwd).multiplyScalar(-26);
-    fx.exhaust(_exhPos, _exhBack, exhaustIntensity);
+    fx.exhaust(_exhPos, _exhBack, exhaustIntensity, _equippedTrailColor);
   }
 
   // Trail — wingtip ribbon (skipped + hidden under reduced-motion)
@@ -1102,6 +1106,26 @@ function loop(now) {
 // =====================================================
 // Menu / screen wiring
 // =====================================================
+// Apply the equipped cosmetics to the live scene: the skin becomes a neon emissive
+// tint on every lit plane material (GLB meshes or the primitive fallback), and the
+// trail becomes the exhaust-plume tint. Called on startGame, after the async GLB
+// swap (loadPlaneModel), and whenever the player equips something in the hangar.
+function applyEquipped() {
+  if (!plane) return;
+  const eq = progression.getUnlocks().equipped;
+  const skin = progression.UNLOCKS.skins.find(s => s.id === eq.skin) || progression.UNLOCKS.skins[0];
+  _skinColor.setHex(skin.color);
+  plane.traverse(o => {
+    if (!o.material) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      if (m.emissive) { m.emissive.copy(_skinColor); m.emissiveIntensity = 0.45; }
+    }
+  });
+  const trail = progression.UNLOCKS.trails.find(t => t.id === eq.trail);
+  _equippedTrailColor = trail ? trail.color : null;   // null ('off') → default plume
+}
+
 function startGame() {
   setActiveScreen(null);
   document.getElementById('game-hud').classList.remove('hidden');
@@ -1114,6 +1138,8 @@ function startGame() {
   // Recycle ambient traffic for a fresh session (reset positions), like the trail.
   if (traffic) traffic.dispose();
   traffic = new Traffic(scene);
+
+  applyEquipped();   // paint the equipped skin/trail onto the plane for this session
 
   // Init / recycle the wingtip trail for this session
   if (_trail) { _trail.dispose(); _trail = null; }
@@ -1244,11 +1270,45 @@ function resultNext() {
   resultContinue();
 }
 
+// Equip a cosmetic from the hangar: persist it, repaint the plane, refresh the panel.
+function hangarEquip(kind, id) {
+  const equipped = progression.equip(kind, id);
+  applyEquipped();
+  renderHangar();
+  return equipped;
+}
+
+// Build the hangar panel from the current unlocks. Locked items are greyed + LV-tagged.
+function renderHangar() {
+  const u = progression.getUnlocks();
+  const cards = (kind, items, equippedId) => items.map(it => {
+    const locked = !it.unlocked;
+    const isEq = it.id === equippedId;
+    const swatch = it.color == null ? 'transparent' : '#' + it.color.toString(16).padStart(6, '0');
+    const tag = locked ? `LV ${it.level}` : (isEq ? 'EQUIPPED' : 'EQUIP');
+    return `<button class="hangar-card${locked ? ' locked' : ''}${isEq ? ' equipped' : ''}" ${locked ? 'disabled' : ''} data-kind="${kind}" data-id="${it.id}">
+      <span class="hangar-swatch" style="--sw:${swatch}"></span>
+      <span class="hangar-name">${it.name}</span>
+      <span class="hangar-tag">${tag}</span>
+    </button>`;
+  }).join('');
+  document.getElementById('hangar-skins').innerHTML  = cards('skins',  u.skins,  u.equipped.skin);
+  document.getElementById('hangar-trails').innerHTML = cards('trails', u.trails, u.equipped.trail);
+}
+
 function wireUI() {
   document.getElementById('btn-start').addEventListener('click', startGame);
   document.getElementById('btn-leaderboard').addEventListener('click', () => {
     renderLeaderboard('all');
     setActiveScreen('leaderboard-screen');
+  });
+  document.getElementById('btn-hangar').addEventListener('click', () => {
+    renderHangar();
+    setActiveScreen('hangar-screen');
+  });
+  document.getElementById('hangar-screen').addEventListener('click', (e) => {
+    const card = e.target.closest('.hangar-card');
+    if (card && !card.classList.contains('locked')) hangarEquip(card.dataset.kind, card.dataset.id);
   });
   document.getElementById('btn-controls').addEventListener('click', () => setActiveScreen('controls-screen'));
   document.getElementById('btn-about').addEventListener('click', () => setActiveScreen('about-screen'));
@@ -1381,6 +1441,8 @@ window.__sky = {
   get lastResult() { return _lastResult; },   // { reason, win, completed } — guards landmine #1
   get traffic() { return traffic; },
   grantXp: (n, reason) => progression.grantXp(n, reason),   // test hook for the progression unit
+  getUnlocks: () => progression.getUnlocks(),
+  equip: (kind, id) => hangarEquip(kind, id),   // equips + repaints the plane + refreshes the hangar UI
   get renderCalls() { return renderer.info.render.calls; },
   get renderTris() { return renderer.info.render.triangles; },
   get world() { return world; },
