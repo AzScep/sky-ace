@@ -84,6 +84,12 @@ let _lastResult = null;          // { reason, win, completed } of the last minig
 const CRASH_MARGIN = 6;          // crash when the plane dips within this of terrain height
 let _crashCount = 0;             // free-flight crashes (respawns) — read by tests via __sky.crashCount
 let _crashCooldown = 0;          // seconds; blocks re-triggering crash while respawning/recovering
+// ---- buzz verb (scream past ambient traffic for score + XP) ----
+const BUZZ_RADIUS = 60;          // how close to a craft counts as a buzz
+const BUZZ_MIN_SPEED = 140;      // must be going this fast — a buzz is a high-speed pass
+const BUZZ_COOLDOWN = 8;         // seconds per craft — can't farm the same plane
+let _buzzCount = 0;              // read by tests via __sky.buzzCount
+let _simClock = 0;              // dt-accumulated sim time (deterministic; drives buzz cooldowns)
 // ---- camera FOV smoothing (module-level, no per-frame alloc) ----
 let _fovCurrent = 70;
 let _fovTarget  = 70;
@@ -229,6 +235,7 @@ const _planeUp   = new THREE.Vector3();   // plane's local up in world space
 const _exhFwd  = new THREE.Vector3();
 const _exhPos  = new THREE.Vector3();
 const _exhBack = new THREE.Vector3();
+const _buzzMid = new THREE.Vector3();   // buzz-FX midpoint (avoid per-frame alloc)
 
 function updateCamera(dt) {
   const planePos  = plane.position;
@@ -946,6 +953,27 @@ function simulate(dt) {
 
   if (traffic) traffic.update(dt, plane.position);   // ambient flock wanders the sky
 
+  // Buzz verb — scream past an ambient craft at speed for score + XP. Free flight only;
+  // per-craft cooldown stops you farming one plane. _buzzMid scratch avoids per-frame alloc.
+  _simClock += dt;
+  if (traffic && !activeMinigame && controller.speed > BUZZ_MIN_SPEED) {
+    // Indexed loop (not for..of) to match the codebase's zero-alloc hot-path convention.
+    for (let i = 0; i < traffic.craft.length; i++) {
+      const c = traffic.craft[i];
+      if (_simClock - c.buzzedAt < BUZZ_COOLDOWN) continue;
+      if (plane.position.distanceTo(c.position) >= BUZZ_RADIUS) continue;
+      c.buzzedAt = _simClock;
+      _buzzCount++;
+      totalScore += 150;
+      _buzzMid.copy(plane.position).add(c.position).multiplyScalar(0.5);
+      fx.ringBurst(_buzzMid, 0xffcf4d);   // NEON.gold
+      audio.play('chime');
+      const prog = progression.grantXp(25, 'buzz');
+      if (prog.leveledUp) { audio.play('fanfare'); flashScreen(0.22, '#b14bff'); }
+      showToast('BUZZ! +150');
+    }
+  }
+
   // Animate mission marker rings + pulse the halo / beam.
   const pulse = 0.7 + Math.sin(performance.now() / 350) * 0.3;
   for (const m of missions) {
@@ -1349,8 +1377,10 @@ window.__sky = {
   get controller() { return controller; },
   get missions() { return missions; },
   get crashCount() { return _crashCount; },
+  get buzzCount() { return _buzzCount; },
   get lastResult() { return _lastResult; },   // { reason, win, completed } — guards landmine #1
   get traffic() { return traffic; },
+  grantXp: (n, reason) => progression.grantXp(n, reason),   // test hook for the progression unit
   get renderCalls() { return renderer.info.render.calls; },
   get renderTris() { return renderer.info.render.triangles; },
   get world() { return world; },

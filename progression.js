@@ -374,3 +374,32 @@ export function addRun(summary) {
     earnedMedals,
   };
 }
+
+/**
+ * Grant ad-hoc XP outside the minigame loop (e.g. the free-flight "buzz" verb).
+ * Same level-up shape addRun returns, minus medals/streak/PB — just XP + level.
+ * @param {number} n       XP to award (rounded, clamped ≥0)
+ * @param {string} reason  free-text tag (echoed back; not persisted)
+ * @returns {{ gained, xp, level, prevLevel, leveledUp, rankTitle, reason }}
+ */
+export function grantXp(n, reason = '') {
+  const profile   = _loadProfile();
+  profile.level   = levelFromXp(profile.xp);   // normalize before diffing
+  const prevLevel = profile.level;
+
+  const gained = Math.max(0, Math.round(Number(n) || 0));
+  profile.xp += gained;
+  profile.level     = levelFromXp(profile.xp);
+  profile.rankTitle = rankTitle(profile.level);
+  _saveProfile(profile);
+
+  return {
+    gained,
+    xp:        profile.xp,
+    level:     profile.level,
+    prevLevel,
+    leveledUp: profile.level > prevLevel,
+    rankTitle: profile.rankTitle,
+    reason,
+  };
+}
