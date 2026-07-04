@@ -5,6 +5,73 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sky Ace — Open World Flight Simulator</title>
   <link rel="stylesheet" href="style.css" />
+  <style>
+    /* Boost speed-line vignette overlay */
+    #boost-vignette {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 6;
+      opacity: 0;
+      mix-blend-mode: screen;
+      background:
+        radial-gradient(ellipse 70% 70% at 50% 50%, transparent 40%, rgba(0,255,213,0.18) 100%),
+        repeating-linear-gradient(
+          88deg,
+          transparent 0px,
+          transparent 38px,
+          rgba(0,255,213,0.055) 39px,
+          transparent 40px
+        );
+      transition: opacity 0.06s linear;
+    }
+    body.reduced-motion #boost-vignette { display: none !important; }
+    /* XP bar in result screen */
+    .xp-bar-row {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 4px 0;
+    }
+    .xp-level { font-size: 11px; color: #b14bff; white-space: nowrap; }
+    .xp-bar { flex: 1; height: 6px; background: rgba(177,75,255,0.2); border-radius: 3px; overflow: hidden; }
+    .xp-bar-fill { height: 100%; background: linear-gradient(90deg, #b14bff, #00ffd5); border-radius: 3px; transition: width 0.4s ease; }
+    .pb-banner { grid-column: 1 / -1; text-align: center; color: #ffcf4d; font-size: 13px; letter-spacing: 4px; padding: 6px 0; }
+    .levelup-banner { grid-column: 1 / -1; text-align: center; color: #00ffd5; font-size: 13px; letter-spacing: 4px; padding: 6px 0; animation: lvPulse 0.6s ease-out; }
+    @keyframes lvPulse { from { transform: scale(1.15); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    /* Result screen multi-button layout */
+    .result-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
+    .result-actions .btn { flex: 1; min-width: 100px; font-size: 13px; padding: 12px 16px; }
+    /* LV chip on start screen */
+    #lv-chip {
+      display: inline-block;
+      font-family: var(--f-mono);
+      font-size: 11px;
+      letter-spacing: 3px;
+      color: #b14bff;
+      border: 1px solid #b14bff;
+      background: rgba(177,75,255,0.12);
+      padding: 4px 12px;
+      margin-top: 8px;
+    }
+    /* HUD combo / best */
+    #hud-combo {
+      font-family: var(--f-display);
+      font-size: 13px;
+      letter-spacing: 3px;
+      color: #ffcf4d;
+      text-align: right;
+      padding: 2px 8px;
+    }
+    #hud-best {
+      font-family: var(--f-mono);
+      font-size: 11px;
+      color: rgba(0,255,213,0.55);
+      text-align: right;
+      padding: 2px 8px;
+    }
+  </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -39,6 +106,7 @@
       </div>
 
       <div class="menu">
+        <div id="lv-chip">LV 1 • Cadet</div>
         <button class="btn primary" id="btn-start">▶ START MISSION</button>
         <button class="btn" id="btn-leaderboard">★ LEADERBOARD</button>
         <button class="btn" id="btn-controls">⌨ CONTROLS</button>
@@ -123,6 +191,7 @@
         <button class="tab" data-tab="canyon">CANYON DASH</button>
         <button class="tab" data-tab="bomb">PRECISION DROP</button>
         <button class="tab" data-tab="dogfight">DOGFIGHT</button>
+        <button class="tab" data-tab="flux">FLUX RUN</button>
       </div>
       <div id="leaderboard-list" class="leaderboard-list"></div>
       <div class="lb-actions">
@@ -166,7 +235,12 @@
       <div class="rank-display" id="rank-display">S</div>
       <h2 id="result-title">MISSION COMPLETE</h2>
       <div class="result-stats" id="result-stats"></div>
-      <button class="btn primary" id="btn-result-continue">CONTINUE</button>
+      <div class="result-actions">
+        <button class="btn" id="btn-result-retry">↺ RETRY [R]</button>
+        <button class="btn" id="btn-result-next">▶ NEXT [N]</button>
+        <button class="btn primary" id="btn-result-continue">✓ CONTINUE</button>
+        <button class="btn" id="btn-result-menu">⌂ MENU</button>
+      </div>
     </div>
   </div>
 
@@ -193,6 +267,7 @@
   <div id="game-hud" class="hidden">
     <canvas id="game-canvas"></canvas>
     <div id="screen-flash"></div>
+    <div id="boost-vignette"></div>
 
     <!-- Waypoint indicator → nearest mission -->
     <div id="waypoint" class="waypoint hidden">
@@ -230,6 +305,8 @@
       <div class="hud-panel score-panel">
         <div class="hud-label">SCORE</div>
         <div class="hud-value" id="hud-score">0</div>
+        <div id="hud-combo" class="hidden"></div>
+        <div id="hud-best" class="hidden"></div>
       </div>
     </div>
 
@@ -280,6 +357,6 @@
     }
   }
   </script>
-  <script type="module" src="game.js?v=9"></script>
+  <script type="module" src="game.js?v=10"></script>
 </body>
 </html>

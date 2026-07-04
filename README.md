@@ -9,6 +9,9 @@ Because the game uses ES modules + an import map, you need to serve the folder o
 Pick one:
 
 ```bash
+# Project test/dev server (matches Playwright config)
+node tests/server.js
+
 # Python (already on macOS)
 python3 -m http.server 8000
 
@@ -16,7 +19,9 @@ python3 -m http.server 8000
 npx serve .
 ```
 
-Then open <http://localhost:8000> in any modern browser.
+If you use the project server, open <http://localhost:4173>. If you use the generic
+Python/Node static servers, open the port they print (for the Python example:
+<http://localhost:8000>).
 
 ## Controls
 

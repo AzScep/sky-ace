@@ -153,10 +153,10 @@ test('[PERF] bloom A/B stays within the 60fps CPU budget', async ({ page }) => {
 
   expect(noBloom.cpuMs).toBeLessThan(16.7);
   expect(bloom.cpuMs).toBeLessThan(16.7);
-  // Budgets fit the realistic scene (textured terrain + individual trees + sprite
-  // clouds) — heavier on draw calls than the old neon scene; instancing trees/clouds
-  // is a tracked follow-up. CPU work is the strict guard and stays well under 16.7ms.
-  expect(bloom.drawCalls).toBeLessThan(450);
+  // Budget updated for the Mastery-Loop build: horizon city (+2), Trail (+2),
+  // 5th mission marker (+6), layered exhaust variable (+10-30).  See perf.spec.js
+  // for detailed justification.  500 still catches any real draw-call regression.
+  expect(bloom.drawCalls).toBeLessThan(500);
   expect(bloom.tris).toBeLessThan(130_000);
   expect(bloom.count).toBeGreaterThan(20);
 });

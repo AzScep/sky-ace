@@ -9,21 +9,21 @@ Each **[BUG]** has a regression test that **fails on the pre-fix code and passes
 ---
 
 ## [BUG] 1 — Course elements spawned outside the flyable world bounds → unreachable
-**Files:** `minigames.js` (`keepInBounds`, `RingRun`, `CanyonDash`)
+**Files:** `minigames.js` (`RingRun`, `CanyonDash` course clamping)
 
 The flight loop clamps the plane to `±(WORLD_SIZE * 0.45)` = ±3600. But Ring Run and
 Canyon Dash laid out their courses by stepping ~400 units per element from a mission
 anchor, so rings reached **x/z ≈ 4600–5500** — *outside the invisible wall*. The plane
 physically could not reach them, so the course could never be completed.
 
-**Fix:** `keepInBounds()` clamps each spawned position to `±(WORLD_SIZE * 0.4)` = ±3200 and
-reflects the travel direction inward when it hits a wall, so the course snakes back into
-the playable area.
+**Fix:** Ring Run and Canyon Dash now clamp course positions inside the flyable area with an
+inline `const BOUND = WORLD_SIZE * 0.42` (±3360), so the course stays inside the plane's
+±3600 clamp while still leaving room for varied layouts.
 
 **Proof:**
 - `tests/regression.spec.js › [BUG] ring & gate courses stay inside the flyable bounds`
   asserts every ring/gate position is within ±3600. On old code `ringMax ≈ 5490` → **FAIL**;
-  on fixed code all positions ≤ 3200 → **PASS**.
+  on fixed code all positions are inside the ±3600 plane clamp → **PASS**.
 - `tests/minigames.spec.js › RING RUN / CANYON DASH` fly through every element to a result;
   these stalled forever (`state === 'minigame'`) on old code.
 

@@ -63,6 +63,11 @@ test('CANYON DASH — triggers, clears all gates, reaches result', async ({ page
 });
 
 test('PRECISION DROP — triggers, bombs target, reaches result', async ({ page }) => {
+  // Per-test timeout raised to 120s: the 62-tick evaluate (3 × ~20 ticks at 5u
+  // drop height) can take 30-40s on cold SwiftShader contexts; boot+startMission
+  // add another ~14s.  120s gives comfortable headroom for all three repeat-each runs.
+  test.setTimeout(120_000);
+
   const errors = captureErrors(page);
   await boot(page);
   await startMission(page);
@@ -74,12 +79,14 @@ test('PRECISION DROP — triggers, bombs target, reaches result', async ({ page 
     const target = m.targetPos.clone();
     let reason = '';
     let dropped = 0;
-    for (let guard = 0; guard < 1200 && sky.state === 'minigame'; guard++) {
+    for (let guard = 0; guard < 300 && sky.state === 'minigame'; guard++) {
       const mg = sky.activeMinigame;
       if (!mg) break;
-      // Drop straight down onto the target (zero horizontal velocity = bullseye).
       if (dropped < 3 && mg.bombs.length === 0) {
-        const dropPos = new THREE.Vector3(target.x, target.y + 350, target.z);
+        // Drop from 5u above target — ~20 ticks/bomb (62 total for 3 sequential
+        // drops).  Zero horizontal velocity → always lands at targetPos center
+        // (distXZ=0 < 26u → bullseye, 1000 pts each).
+        const dropPos = new THREE.Vector3(target.x, target.y + 5, target.z);
         mg.dropBomb(dropPos, new THREE.Vector3(0, 0, 0));
         dropped++;
       }
@@ -95,6 +102,39 @@ test('PRECISION DROP — triggers, bombs target, reaches result', async ({ page 
   expect(out.reason).toBe('BOMBS EXPENDED');
   await expect(page.locator('#result-screen')).toHaveClass(/active/);
   assertNoErrors(errors, 'Errors during Precision Drop');
+});
+
+test('FLUX RUN — triggers, collects all nodes, banks, reaches result', async ({ page }) => {
+  const errors = captureErrors(page);
+  await boot(page);
+  await startMission(page);
+
+  const out = await page.evaluate(() => {
+    const sky = window.__sky;
+    const m = sky.forceMinigame('flux');
+    if (!m) return { error: 'no FluxRun minigame' };
+    let lastScore = 0;
+    for (let guard = 0; guard < 1000 && sky.state === 'minigame'; guard++) {
+      const mg = sky.activeMinigame;
+      if (!mg || mg.done) break;
+      const uncollected = mg.nodes.filter(n => !n.userData.collected);
+      // Bank-1-at-a-time strategy: collect one node then immediately bank.
+      // This is guaranteed to complete all 28 nodes (GRID DRAINED) in ~56 ticks.
+      if (mg.charge >= 1) {
+        sky.plane.position.copy(mg.collectorPos);
+      } else if (uncollected.length > 0) {
+        sky.plane.position.copy(uncollected[0].position);
+      }
+      sky.tick(1 / 60);
+      if (mg.score > lastScore) lastScore = mg.score;
+    }
+    return { state: sky.state, score: sky.totalScore, lastScore };
+  });
+
+  expect(out.state).toBe('result');
+  expect(out.score).toBeGreaterThan(0);
+  await expect(page.locator('#result-screen')).toHaveClass(/active/);
+  assertNoErrors(errors, 'Errors during Flux Run');
 });
 
 test('DOGFIGHT — triggers, downs all enemies, reaches result', async ({ page }) => {

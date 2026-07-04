@@ -88,8 +88,18 @@ export class FX {
     this._spawn('flare', pos, { scale: 18, maxLife: 0.3, grow: 1.8, color });
   }
 
-  exhaust(pos, back) {
-    this._spawn('flare', pos, { scale: 4, maxLife: 0.45, grow: 2.4, opacity: 0.45, vel: back, color: 0x9fd8ff });
+  // Layered afterburner plume.  intensity=0..1 (default 1) lets game.js
+  // emit faintly at low throttle and skip entirely at 0.
+  // 3 sprites per call; keep call frequency LOW in game.js (every 2-3 frames).
+  exhaust(pos, back, intensity = 1.0) {
+    if (intensity <= 0) return;
+    const i = Math.min(intensity, 1.0);
+    // Hot centre: gold #ffcf4d — small, bright
+    this._spawn('flare', pos, { scale: 4 * i,  maxLife: 0.18, grow: 1.8, opacity: 0.70 * i, vel: back, color: 0xffcf4d });
+    // Core:        cyan #00ffd5 — medium
+    this._spawn('flare', pos, { scale: 7 * i,  maxLife: 0.26, grow: 2.2, opacity: 0.48 * i, vel: back, color: 0x00ffd5 });
+    // Fringe:      magenta #ff2e88 — largest, faintest
+    this._spawn('flare', pos, { scale: 11 * i, maxLife: 0.36, grow: 2.8, opacity: 0.28 * i, vel: back, color: 0xff2e88 });
   }
 
   update(dt) {
@@ -110,5 +120,128 @@ export class FX {
       p.sprite.material.opacity = p.opacity * Math.pow(1 - t, p.fadePow);
       if (p.spin) p.sprite.material.rotation += p.spin * dt;
     }
+  }
+}
+
+// =====================================================
+// Trail — wingtip light ribbon
+// Fixed-length ring-buffer Mesh: cyan #00ffd5 (newest) → purple #b14bff (oldest).
+// Additive MeshBasicMaterial, depthWrite:false.  ZERO per-frame allocations.
+//
+// API:
+//   new Trail(scene)          — creates mesh, adds to scene
+//   trail.push(pos)           — record next Vector3 position (copies components)
+//   trail.update()            — rewrites BufferAttribute IN PLACE + setDrawRange
+//   trail.dispose()           — removes mesh, disposes geometry + material
+//   trail.setWidth(w)         — adjust ribbon half-width (default 3)
+//   trail.visible             — forwards to mesh.visible (reduced-motion gate)
+// =====================================================
+export class Trail {
+  constructor(scene, segments = 48) {
+    this._N = segments;
+    this._head = 0;      // next write slot
+    this._count = 0;     // number of valid slots (0..N)
+
+    // Ring-buffer position storage — pre-allocated Float32 arrays, no per-frame alloc
+    this._px = new Float32Array(this._N);
+    this._py = new Float32Array(this._N);
+    this._pz = new Float32Array(this._N);
+
+    this._w = 3.0; // ribbon half-width (world units)
+
+    // Pre-allocate geometry: 2 vertices per segment (top/bottom edge of ribbon)
+    const vCount = this._N * 2;
+    const posData = new Float32Array(vCount * 3);
+    const colData = new Float32Array(vCount * 3);
+
+    // Pre-build index buffer for triangle strip (never changes)
+    // Each segment i: two CCW triangles connecting verts (2i, 2i+1, 2i+2, 2i+3)
+    const idxData = new Uint16Array((this._N - 1) * 6);
+    for (let i = 0; i < this._N - 1; i++) {
+      const b = i * 6, v = i * 2;
+      idxData[b + 0] = v;     idxData[b + 1] = v + 1; idxData[b + 2] = v + 2;
+      idxData[b + 3] = v + 1; idxData[b + 4] = v + 3; idxData[b + 5] = v + 2;
+    }
+
+    const geo = new THREE.BufferGeometry();
+    this._posAttr = new THREE.BufferAttribute(posData, 3);
+    this._colAttr = new THREE.BufferAttribute(colData, 3);
+    this._posAttr.usage = THREE.DynamicDrawUsage;
+    this._colAttr.usage = THREE.DynamicDrawUsage;
+    geo.setAttribute('position', this._posAttr);
+    geo.setAttribute('color',    this._colAttr);
+    geo.setIndex(new THREE.BufferAttribute(idxData, 1));
+    geo.setDrawRange(0, 0); // nothing visible until push() + update()
+
+    const mat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      blending:     THREE.AdditiveBlending,
+      depthWrite:   false,
+      transparent:  true,
+      side:         THREE.DoubleSide,
+    });
+
+    this._mesh = new THREE.Mesh(geo, mat);
+    this._mesh.frustumCulled = false;
+    scene.add(this._mesh);
+
+    // Scratch Color — reused every update(), no per-frame alloc
+    this._cCyan   = new THREE.Color(0x00ffd5);
+    this._cPurple = new THREE.Color(0xb14bff);
+    this._cScratch = new THREE.Color();
+  }
+
+  get visible() { return this._mesh.visible; }
+  set visible(v) { this._mesh.visible = v; }
+
+  setWidth(w) { this._w = w; }
+
+  // Record the next position (copies xyz; no Vector3 alloc)
+  push(pos) {
+    this._px[this._head] = pos.x;
+    this._py[this._head] = pos.y;
+    this._pz[this._head] = pos.z;
+    this._head = (this._head + 1) % this._N;
+    if (this._count < this._N) this._count++;
+  }
+
+  // Rewrite the existing BufferAttributes in place; called once per simulate() tick
+  update() {
+    const n = this._count;
+    if (n < 2) { this._mesh.geometry.setDrawRange(0, 0); return; }
+
+    const N  = this._N;
+    const pa = this._posAttr;
+    const ca = this._colAttr;
+    const w  = this._w;
+
+    for (let i = 0; i < n; i++) {
+      // Oldest point at i=0, newest at i=n-1
+      const ri = (this._head - n + i + N) % N;
+      const x = this._px[ri], y = this._py[ri], z = this._pz[ri];
+      const vi = i * 2;
+
+      // Ribbon: offset top/bottom verts in world Y (simple horizontal ribbon)
+      pa.setXYZ(vi,     x, y + w, z);
+      pa.setXYZ(vi + 1, x, y - w, z);
+
+      // Color: purple (oldest) → cyan (newest); alpha baked into brightness for additive blend
+      const t = i / (n - 1); // 0=oldest, 1=newest
+      this._cScratch.lerpColors(this._cPurple, this._cCyan, t);
+      const bright = t * 0.9 + 0.05; // fade tail toward black (additive → invisible)
+      ca.setXYZ(vi,     this._cScratch.r * bright, this._cScratch.g * bright, this._cScratch.b * bright);
+      ca.setXYZ(vi + 1, this._cScratch.r * bright, this._cScratch.g * bright, this._cScratch.b * bright);
+    }
+
+    pa.needsUpdate = true;
+    ca.needsUpdate = true;
+    // Draw (n-1) segments = (n-1)*2 triangles = (n-1)*6 indices
+    this._mesh.geometry.setDrawRange(0, (n - 1) * 6);
+  }
+
+  dispose() {
+    this._mesh.geometry.dispose();
+    this._mesh.material.dispose();
+    if (this._mesh.parent) this._mesh.parent.remove(this._mesh);
   }
 }

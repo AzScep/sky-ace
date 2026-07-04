@@ -7,12 +7,13 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=9';
-import { createPlane, PlaneController, Input } from './plane.js?v=9';
-import { RingRun, CanyonDash, PrecisionDrop, Dogfight } from './minigames.js?v=9';
-import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=9';
-import { audio } from './audio.js?v=9';
-import { FX } from './fx.js?v=9';
+import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=10';
+import { createPlane, PlaneController, Input } from './plane.js?v=10';
+import { RingRun, CanyonDash, PrecisionDrop, Dogfight, FluxRun } from './minigames.js?v=10';
+import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=10';
+import { audio } from './audio.js?v=10';
+import { FX, Trail } from './fx.js?v=10';
+import * as progression from './progression.js?v=10';
 
 // ----- State -----
 const State = {
@@ -40,7 +41,17 @@ let fx;                       // particle FX system
 let prevBoost = false;        // for boost-whoosh edge detection
 let shake = 0;                // current camera-shake magnitude
 let reducedMotion = false;       // mirrors settings.reducedMotion for hot paths
-let onboardingActive = false;    // first-run overlay is up → freeze the sim
+let onboardingActive = false;    // first-run overlay is up
+// ---- mastery loop state ----
+let _trail = null;               // wingtip Trail (fx.js)
+let _hitStop = 0;                // seconds of hit-stop remaining (loop-only, not tick)
+let _vignetteEl = null;          // #boost-vignette DOM element (lazy-grabbed)
+let _lastMinigameMode = null;    // for Retry button
+// ---- camera FOV smoothing (module-level, no per-frame alloc) ----
+let _fovCurrent = 70;
+let _fovTarget  = 70;
+// ---- onboarding coach state ----
+let _onboardStep = 0;  // 0=throttle, 1=bank, 2=marker, -1=done
 
 // ----- Persisted user settings (localStorage: sky_settings) -----
 const DEFAULT_SETTINGS = {
@@ -149,6 +160,7 @@ function setupMissions() {
     { mode: 'canyon',   pos: new THREE.Vector3(-2000, 0,  1400), color: 0xff9500, name: 'CANYON DASH',    desc: 'Low-altitude run between pylon gates' },
     { mode: 'bomb',     pos: new THREE.Vector3( 2200, 0, -1800), color: 0xff3860, name: 'PRECISION DROP', desc: 'Bomb a target with three drops' },
     { mode: 'dogfight', pos: new THREE.Vector3(-1800, 0, -2200), color: 0xaa55ff, name: 'DOGFIGHT',       desc: 'Shoot down four enemy aces' },
+    { mode: 'flux',     pos: new THREE.Vector3(  900, 0, -1200), color: 0x00ffd5, name: 'FLUX RUN',       desc: 'Charge nodes, bank at the Collector' },
   ];
   for (const p of places) {
     const ground = terrainHeight(p.pos.x, p.pos.z);
@@ -167,36 +179,78 @@ function setupMissions() {
 const _camTarget = new THREE.Vector3();
 const _camLookAt = new THREE.Vector3();
 const _camOffset = new THREE.Vector3();
-const _camFwd = new THREE.Vector3();
+const _camFwd    = new THREE.Vector3();
+const _camRight  = new THREE.Vector3();
+const _camUp     = new THREE.Vector3();   // up vector handed to lookAt (banks the view)
+const _planeUp   = new THREE.Vector3();   // plane's local up in world space
+// Reusable scratch for exhaust (avoid per-frame alloc in simulate hot path).
+const _exhFwd  = new THREE.Vector3();
+const _exhPos  = new THREE.Vector3();
+const _exhBack = new THREE.Vector3();
 
 function updateCamera(dt) {
-  const planePos = plane.position;
+  const planePos  = plane.position;
   const planeQuat = plane.quaternion;
+  const speed     = controller.speed || 0;
 
+  // --- FOV kick from speed (70 → 84 at boost) ---
+  const boostSpeed = controller.boostSpeed || 320;
+  const maxSpeed   = controller.maxSpeed   || 240;
+  const fovT = THREE.MathUtils.clamp((speed - maxSpeed * 0.6) / ((boostSpeed - maxSpeed * 0.6) || 1), 0, 1);
+  _fovTarget = 70 + fovT * 14;
+  if (Math.abs(_fovCurrent - _fovTarget) > 0.01) {
+    _fovCurrent += (_fovTarget - _fovCurrent) * (1 - Math.exp(-8 * dt));
+    camera.fov = _fovCurrent;
+    camera.updateProjectionMatrix();
+  }
+
+  // --- Camera position target + up vector ---
+  // The up vector handed to lookAt banks the view with the airframe. It blends
+  // world-up toward the plane's up: any non-zero plane-up share keeps "up" from
+  // ever lining up with the view direction, so steep climbs/loops never make
+  // lookAt degenerate and flip. (The old `camera.rotation.z` Euler write did the
+  // same job but gimbal-locked when pitched — that was the "camera off place".)
+  _planeUp.set(0, 1, 0).applyQuaternion(planeQuat);
+  _camUp.set(0, 1, 0);
   if (cameraMode === 0) {
-    // Chase
-    _camOffset.set(0, 6, -22).applyQuaternion(planeQuat);
+    // Chase — dolly pulls back slightly on boost for wider sense of speed
+    const dollZ = controller.boosting ? -28 : -22;
+    const dollY = controller.boosting ?   5 :   6;
+    _camOffset.set(0, dollY, dollZ).applyQuaternion(planeQuat);
     _camTarget.copy(planePos).add(_camOffset);
     _camFwd.set(0, 0, 1).applyQuaternion(planeQuat).multiplyScalar(20);
     _camLookAt.copy(planePos).add(_camFwd);
+    // Lean into banks/loops — gentle under reduced-motion, fuller otherwise.
+    _camUp.lerp(_planeUp, reducedMotion ? 0.18 : 0.45).normalize();
   } else if (cameraMode === 1) {
-    // Cockpit
+    // Cockpit — fully banks with the airframe (you're strapped into it)
     _camOffset.set(0, 0.6, 2.2).applyQuaternion(planeQuat);
     _camTarget.copy(planePos).add(_camOffset);
     _camFwd.set(0, 0, 1).applyQuaternion(planeQuat).multiplyScalar(50);
     _camLookAt.copy(_camTarget).add(_camFwd);
+    _camUp.copy(_planeUp);
   } else {
-    // Cinematic side
+    // Cinematic side — keep a level world horizon
     _camOffset.set(35, 8, -8).applyQuaternion(planeQuat);
     _camTarget.copy(planePos).add(_camOffset);
     _camLookAt.copy(planePos);
   }
+  camera.up.copy(_camUp);
 
-  // Smooth camera follow — framerate-independent exponential smoothing so the
-  // chase feel is identical at 30fps and 144fps. Cockpit stays a hard snap.
+  // Smooth camera follow — framerate-independent exponential smoothing.
+  // Cockpit snaps; chase/cinematic ease.
   const smooth = cameraMode === 1 ? 1 : 1 - Math.exp(-9 * dt);
   camera.position.lerp(_camTarget, smooth);
   camera.lookAt(_camLookAt);
+
+  // --- G-load camera lag (chase only, skip reduced-motion) ---
+  // Nudge the camera against the angular rates to convey weight. Position-only,
+  // so the framed target drifts slightly behind during hard maneuvers.
+  if (!reducedMotion && cameraMode === 0) {
+    _camRight.set(1, 0, 0).applyQuaternion(planeQuat);  // plane right
+    camera.position.addScaledVector(_camRight, controller.rollRate  *  0.12);
+    camera.position.addScaledVector(_planeUp,  controller.pitchRate * -0.08);
+  }
 
   // Impact shake (skipped under reduced-motion)
   if (shake > 0.001) {
@@ -265,7 +319,7 @@ function checkMissions() {
 }
 
 function startMinigame(mission) {
-  const Klass = { ring: RingRun, canyon: CanyonDash, bomb: PrecisionDrop, dogfight: Dogfight }[mission.mode];
+  const Klass = { ring: RingRun, canyon: CanyonDash, bomb: PrecisionDrop, dogfight: Dogfight, flux: FluxRun }[mission.mode];
   if (!Klass) return;
   activeMinigame = new Klass(scene, plane, mission.pos);
   activeMinigame._mission = mission;
@@ -275,7 +329,9 @@ function startMinigame(mission) {
   document.getElementById('mg-title').textContent = mission.name;
   document.getElementById('mg-objective').textContent = activeMinigame.objective;
   showToast(`▶ ${mission.name}`);
-  audio.playMusic('music_action');
+  // Choose music per mode; updateAudio handles ongoing crossfade/intensity
+  const musicTrack = (mission.mode === 'dogfight' || mission.mode === 'flux') ? 'music_dogfight' : 'music_action';
+  audio.playMusic(musicTrack);
   if (mission.mode === 'dogfight' || mission.mode === 'bomb') audio.playVoice('combat');
 }
 
@@ -283,11 +339,12 @@ function endMinigame() {
   if (!activeMinigame) return;
   const mode = activeMinigame.mode;
   const score = activeMinigame.score;
-  const stats = activeMinigame.getStats();
   const reason = activeMinigame.finishReason || 'COMPLETE';
+  const mgSummary = activeMinigame.getSummary();
 
   const result = addScore(mode, score);
   totalScore += score;
+  _lastMinigameMode = mode;
 
   // Mark the mission as cleared and give its marker a distinct "done" look.
   const mission = activeMinigame._mission;
@@ -302,12 +359,23 @@ function endMinigame() {
     if (mk.userData.halo) mk.userData.halo.material.color.setHex(0x2effa8);
   }
 
+  // Build progression summary and record the run.
+  const summary = {
+    mode,
+    score,
+    grade: result.grade,
+    completed: reason !== 'TIME UP',
+    finishReason: reason,
+    ...mgSummary,
+  };
+  const prog = progression.addRun(summary);
+
   activeMinigame.cleanup();
   activeMinigame = null;
   document.getElementById('minigame-hud').classList.add('hidden');
 
   state = State.RESULT;
-  showResult(mode, score, reason, result);
+  showResult(mode, score, reason, result, prog);
 }
 
 function handleFire() {
@@ -351,22 +419,62 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.classList.add('hidden'), 1800);
 }
 
-function showResult(mode, score, reason, result) {
+// Helper: total XP required to reach a given level (cumulative from level 1).
+// Cost(L-1→L) = 300 + 150*(L-1).  Closed form: 300*(N-1) + 150*(N-1)*N/2.
+function _xpForLevel(level) {
+  if (level <= 1) return 0;
+  const n = level - 1;
+  return 300 * n + 75 * n * (n + 1);  // 75 = 150/2
+}
+
+function showResult(mode, score, reason, result, prog) {
   audio.stopAllMusic(0.5);
   const win = reason !== 'TIME UP' && result.grade !== 'D';
   if (win) { audio.play('fanfare'); flashScreen(0.28, '#00ff88'); }
+  if (prog && prog.leveledUp) { audio.play('fanfare'); flashScreen(0.22, '#b14bff'); }
   audio.playVoice(win ? 'complete' : 'failed');
   const el = document.getElementById('result-screen');
   document.getElementById('rank-display').textContent = result.grade;
   document.getElementById('rank-display').className = `rank-display grade-${result.grade}`;
   document.getElementById('result-title').textContent = `${MODES[mode].name.toUpperCase()} • ${reason}`;
   const stats = document.getElementById('result-stats');
+
+  // XP / level row
+  let xpHtml = '';
+  if (prog) {
+    const lvCost = 300 + 150 * prog.level;  // cost for current level → next
+    const xpIntoLevel = Math.max(0, prog.xp - _xpForLevel(prog.level));
+    const pct = Math.min(100, Math.round(xpIntoLevel / lvCost * 100));
+    xpHtml = `
+      <div class="stat-label">XP GAINED</div><div class="stat-value">+${prog.gained}</div>
+      <div class="xp-bar-row">
+        <span class="xp-level">LV ${prog.level} • ${prog.rankTitle}</span>
+        <div class="xp-bar"><div class="xp-bar-fill" style="width:${pct}%"></div></div>
+      </div>`;
+    if (prog.isPB)      xpHtml += `<div class="pb-banner">★ NEW PERSONAL BEST</div>`;
+    if (prog.leveledUp) xpHtml += `<div class="levelup-banner">▲ LEVEL UP → LV ${prog.level} • ${prog.rankTitle}</div>`;
+  }
+
   stats.innerHTML = `
     <div class="stat-label">SCORE</div><div class="stat-value">${Math.round(score).toLocaleString()}</div>
     <div class="stat-label">GRADE</div><div class="stat-value">${result.grade}</div>
     <div class="stat-label">PERSONAL RANK</div><div class="stat-value">#${result.rank}</div>
     <div class="stat-label">TOTAL SCORE</div><div class="stat-value">${Math.round(totalScore).toLocaleString()}</div>
+    ${xpHtml}
   `;
+
+  // Medal toasts — one per medal, staggered so they don't stomp each other.
+  if (prog && prog.earnedMedals.length > 0) {
+    let delay = 800;
+    for (const m of prog.earnedMedals) {
+      setTimeout(() => showToast(`\u{1F3C5} ${m.name.toUpperCase()} +${m.xp} XP`), delay);
+      delay += 2200;
+    }
+  }
+
+  // Refresh start-screen LV chip
+  _updateLvChip();
+
   el.classList.add('active');
 }
 
@@ -393,6 +501,37 @@ function updateHUD() {
       showToast(activeMinigame._toast);
       activeMinigame._toast = null;
     }
+    // Combo / streak chip near score
+    const combo  = activeMinigame.combo  || 0;
+    const streak = activeMinigame.streak || 0;
+    const multi  = Math.max(combo, streak);
+    const comboEl = document.getElementById('hud-combo');
+    if (comboEl) {
+      if (multi > 1) {
+        comboEl.textContent = `x${multi} ${combo > streak ? 'COMBO' : 'STREAK'}`;
+        comboEl.classList.remove('hidden');
+      } else {
+        comboEl.classList.add('hidden');
+      }
+    }
+    // BEST ghost (from progression profile)
+    const bestEl = document.getElementById('hud-best');
+    if (bestEl) {
+      const prof = progression.getProfile();
+      const best = prof.best[activeMinigame.mode];
+      if (best) {
+        bestEl.textContent = `BEST ${Math.round(best).toLocaleString()}`;
+        bestEl.classList.remove('hidden');
+      } else {
+        bestEl.classList.add('hidden');
+      }
+    }
+  } else {
+    // Hide combo/best when not in a minigame
+    const c = document.getElementById('hud-combo');
+    const b = document.getElementById('hud-best');
+    if (c) c.classList.add('hidden');
+    if (b) b.classList.add('hidden');
   }
 }
 
@@ -501,10 +640,30 @@ function updateAudio(dt) {
     if (controller.boosting && !prevBoost) audio.play('boost');
     prevBoost = controller.boosting;
 
-    // Sounds emitted from inside minigame logic
+    // Drain minigame SFX — entries are EITHER a string OR {name,rate,gain} object.
     if (activeMinigame && activeMinigame._sfxQueue && activeMinigame._sfxQueue.length) {
-      for (const s of activeMinigame._sfxQueue) audio.play(s);
+      for (const s of activeMinigame._sfxQueue) {
+        if (typeof s === 'string') audio.play(s);
+        else audio.play(s.name, { rate: s.rate, gain: s.gain });
+      }
       activeMinigame._sfxQueue.length = 0;
+    }
+
+    // Adaptive music: select track + modulate intensity from combo/streak/urgency.
+    if (state === State.MINIGAME && activeMinigame) {
+      const m        = activeMinigame.mode;
+      const combo    = activeMinigame.combo  || 0;
+      const streak   = activeMinigame.streak || 0;
+      const timeLeft = activeMinigame.timeLeft || 0;
+      let intensity  = (m === 'dogfight' || m === 'bomb') ? 0.5 : (m === 'flux' ? 0.35 : 0.2);
+      intensity += Math.min(0.3, Math.max(combo, streak) * 0.06);
+      if (timeLeft < 10) intensity = Math.min(1, intensity + 0.3);
+      const urgency   = timeLeft < 10;
+      const trackName = (m === 'dogfight' || m === 'flux') ? 'music_dogfight' : 'music_action';
+      audio.setLoopParams(trackName, 0.40 + intensity * 0.18, urgency ? 1.03 : 1.0, 0.4);
+    } else if (state === State.PLAYING) {
+      // Free flight — calm music
+      audio.setLoopParams('music_action', 0.34, 1.0, 0.8);
     }
   }
 }
@@ -568,16 +727,54 @@ function wireSettings() {
 // =====================================================
 // First-run onboarding + dismissible tip
 // =====================================================
+// Onboarding coach steps — text shown at top of modal
+const _ONBOARD_STEPS = [
+  'STEP 1/3 — Hold SHIFT to throttle up and get airborne.',
+  'STEP 2/3 — Bank with A/D toward the ▲ waypoint arrow.',
+  'STEP 3/3 — Fly through the glowing mission marker. GO!',
+];
+
+function _tickOnboardCoach() {
+  if (!onboardingActive || _onboardStep < 0) return;
+  const stepEl = document.getElementById('onboard-step');
+  if (!stepEl) return;
+  // Advance step based on player action (sim is already running underneath)
+  if (_onboardStep === 0 && controller && controller.throttle > 0.35) {
+    _onboardStep = 1;
+    stepEl.textContent = _ONBOARD_STEPS[1];
+  } else if (_onboardStep === 1 && controller && Math.abs(controller.rollRate) > 0.4) {
+    _onboardStep = 2;
+    stepEl.textContent = _ONBOARD_STEPS[2];
+  } else if (_onboardStep === 2 && state === State.MINIGAME) {
+    // Player entered a mission — auto-dismiss
+    dismissOnboarding();
+  }
+}
+
 function maybeShowOnboarding() {
   if (localStorage.getItem('sky_onboarded')) return;
   onboardingActive = true;
+  _onboardStep = 0;
+  // Inject a step-hint element into the onboard modal if not already present
+  const box = document.querySelector('#onboard-screen .onboard-box');
+  if (box && !document.getElementById('onboard-step')) {
+    const hint = document.createElement('p');
+    hint.id = 'onboard-step';
+    hint.style.cssText = 'color:#00ffd5;font-size:13px;letter-spacing:2px;margin-bottom:12px;';
+    hint.textContent = _ONBOARD_STEPS[0];
+    box.insertBefore(hint, box.querySelector('#btn-onboard-dismiss'));
+  } else if (document.getElementById('onboard-step')) {
+    document.getElementById('onboard-step').textContent = _ONBOARD_STEPS[0];
+  }
   document.getElementById('onboard-screen').classList.add('active');
 }
+
 function dismissOnboarding() {
   try { localStorage.setItem('sky_onboarded', '1'); } catch { /* ignore */ }
   onboardingActive = false;
+  _onboardStep = -1;
   document.getElementById('onboard-screen').classList.remove('active');
-  lastTime = performance.now();   // swallow the frozen interval so dt doesn't spike
+  lastTime = performance.now();   // swallow any accumulated dt so no jump
 }
 function maybeShowTip() {
   const el = document.getElementById('hud-tip');
@@ -622,6 +819,8 @@ function updateWaypoint() {
 // drive the game deterministically without depending on rAF timing.
 function simulate(dt) {
   controller.update(dt, input.read());
+  // Advance onboarding coach (sim runs under the overlay)
+  if (onboardingActive) _tickOnboardCoach();
 
   // Soft floor — don't crash, just push up
   const ground = terrainHeight(plane.position.x, plane.position.z);
@@ -666,7 +865,13 @@ function simulate(dt) {
         fx.explosion(p, size);
         const atten = THREE.MathUtils.clamp(1 - p.distanceTo(camera.position) / 700, 0.12, 1);
         addShake(1.3 * size * atten);
-        if (size >= 1.4) flashScreen(0.2 * atten, '#ffd9a0');
+        if (size >= 1.4) {
+          flashScreen(0.2 * atten, '#ffd9a0');
+          // Hit-stop: large explosions (dogfight kills size 1.7) → 130ms; others → 90ms
+          triggerHitStop(size >= 1.7 ? 0.13 : 0.09);
+        } else {
+          triggerHitStop(0.07);
+        }
       } else if (e.kind === 'ring') {
         fx.ringBurst(p, e.color || 0x00ff88);
       }
@@ -676,10 +881,25 @@ function simulate(dt) {
     activeMinigame._voQueue.length = 0;
   }
 
-  // Afterburner exhaust while boosting
-  if (controller.boosting) {
-    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
-    fx.exhaust(plane.position.clone().addScaledVector(fwd, -5), fwd.clone().multiplyScalar(-26));
+  // Exhaust plume — proportional to throttle at all times (boost = full intensity).
+  // Uses pre-allocated scratch vectors to avoid per-frame alloc in hot path.
+  const exhaustIntensity = controller.boosting ? 1.0 : controller.throttle * 0.4;
+  if (exhaustIntensity > 0.05) {
+    _exhFwd.set(0, 0, 1).applyQuaternion(plane.quaternion);
+    _exhPos.copy(plane.position).addScaledVector(_exhFwd, -5);
+    _exhBack.copy(_exhFwd).multiplyScalar(-26);
+    fx.exhaust(_exhPos, _exhBack, exhaustIntensity);
+  }
+
+  // Trail — wingtip ribbon (skipped + hidden under reduced-motion)
+  if (_trail) {
+    if (reducedMotion) {
+      _trail.visible = false;
+    } else {
+      _trail.visible = true;
+      _trail.push(plane.position);
+      _trail.update();
+    }
   }
 
   // Water surface drifts (sky is a static equirectangular background)
@@ -688,6 +908,13 @@ function simulate(dt) {
     const t = performance.now() / 1000;
     m.offset.set((t * 0.012) % 1, (t * 0.007) % 1);
   }
+}
+
+// Hit-stop: slow the simulation to 6% speed for a brief moment on big impacts.
+// Only in loop() — __sky.tick() bypasses it so tests remain deterministic.
+function triggerHitStop(sec) {
+  if (reducedMotion) return;
+  _hitStop = Math.max(_hitStop, sec);
 }
 
 // Rolling frame-time stats for perf measurement (exposed to the page).
@@ -706,12 +933,34 @@ function loop(now) {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
+  // Hit-stop: slow the sim to 6% speed while active (loop-only; tick() bypasses it).
+  const simDt = (_hitStop > 0 && !reducedMotion) ? dt * 0.06 : dt;
+  if (_hitStop > 0) _hitStop = Math.max(0, _hitStop - dt);
+
   const t0 = performance.now();
-  if ((state === State.PLAYING || state === State.MINIGAME) && !onboardingActive) {
-    simulate(dt);
+  // NOTE: onboardingActive no longer gates the sim — it runs under the overlay.
+  if (state === State.PLAYING || state === State.MINIGAME) {
+    simulate(simDt);
   }
   renderFrame();
   const t1 = performance.now();
+
+  // Boost vignette opacity — driven by speed each frame, never under reduced-motion.
+  if (!reducedMotion) {
+    if (!_vignetteEl) _vignetteEl = document.getElementById('boost-vignette');
+    if (_vignetteEl && controller) {
+      const bSpeed = controller.boostSpeed || 320;
+      let vOp = 0;
+      if (controller.boosting) {
+        vOp = 0.7;
+      } else {
+        const t2 = THREE.MathUtils.clamp((controller.speed - bSpeed * 0.6) / (bSpeed * 0.4), 0, 1);
+        vOp = t2 * 0.4;
+      }
+      _vignetteEl.style.opacity = (isFlying() ? vOp : 0).toFixed(3);
+    }
+  }
+
   recordFrame(t1 - t0, frameStats.prev ? t1 - frameStats.prev : 0);
   frameStats.prev = t1;
 }
@@ -726,6 +975,11 @@ function startGame() {
   lastTime = performance.now();
   controller.reset(new THREE.Vector3(0, 400, 0));
   totalScore = 0;
+
+  // Init / recycle the wingtip trail for this session
+  if (_trail) { _trail.dispose(); _trail = null; }
+  _trail = new Trail(scene);
+
   audio.init().then(() => {
     audio.resume();
     audio.stopAllMusic(0.4);
@@ -733,7 +987,7 @@ function startGame() {
   });
   updateWaypoint();        // position the arrow before the first frame
   maybeShowTip();
-  maybeShowOnboarding();   // first run: overlay control hints + freeze the sim
+  maybeShowOnboarding();   // first run: show coach overlay (sim runs underneath)
 }
 
 function togglePause() {
@@ -741,24 +995,27 @@ function togglePause() {
   if (state === State.PLAYING || state === State.MINIGAME) {
     state = State.PAUSED;
     setActiveScreen('pause-screen');
-    audio.suspend();
+    audio.setMuffle(true);   // keep engine droning but muffled
   } else if (state === State.PAUSED) {
     state = activeMinigame ? State.MINIGAME : State.PLAYING;
     setActiveScreen(null);
-    audio.resume();
+    audio.setMuffle(false);  // unmuffled on resume
   }
 }
 
 function quitToMenu() {
   if (activeMinigame) { activeMinigame.cleanup(); activeMinigame = null; }
+  if (_trail) { _trail.dispose(); _trail = null; }
   document.getElementById('minigame-hud').classList.add('hidden');
   document.getElementById('game-hud').classList.add('hidden');
   state = State.MENU;
   setActiveScreen('start-screen');
+  audio.setMuffle(false);   // ensure no lingering muffle
   audio.resume();
   audio.stopLoop('engine', 0.2);
   prevBoost = false;
   audio.playMusic('music_menu');
+  _updateLvChip();
 }
 
 function setActiveScreen(id) {
@@ -795,6 +1052,70 @@ function renderLeaderboard(mode = 'all') {
   list.innerHTML = html;
 }
 
+// =====================================================
+// LV chip helper — update start-screen rank display
+// =====================================================
+function _updateLvChip() {
+  const prof = progression.getProfile();
+  const chip = document.getElementById('lv-chip');
+  if (chip) chip.textContent = `LV ${prof.level} • ${prof.rankTitle}`;
+}
+
+// =====================================================
+// forceMinigame — exposed as a named function so result-Retry can call it
+// =====================================================
+function forceMinigame(mode) {
+  const m = missions.find(x => x.mode === mode);
+  if (!m) return null;
+  plane.position.copy(m.pos).add(new THREE.Vector3(0, 150, -250));
+  plane.quaternion.identity();
+  controller.velocity.set(0, 0, 0);
+  state = State.PLAYING;
+  startMinigame(m);
+  return activeMinigame;
+}
+
+// =====================================================
+// Result screen — Retry / Next / Continue handlers
+// =====================================================
+function resultContinue() {
+  document.getElementById('result-screen').classList.remove('active');
+  state = State.PLAYING;
+  const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
+  plane.position.addScaledVector(fwd, 250);
+  plane.position.y += 100;
+}
+
+function resultRetry() {
+  if (!_lastMinigameMode) return;
+  document.getElementById('result-screen').classList.remove('active');
+  forceMinigame(_lastMinigameMode);
+}
+
+function resultNext() {
+  document.getElementById('result-screen').classList.remove('active');
+  let nearest = null, bestDist = Infinity;
+  for (const m of missions) {
+    if (m.cleared) continue;
+    const d = plane.position.distanceTo(m.pos);
+    if (d < bestDist) { bestDist = d; nearest = m; }
+  }
+  if (nearest) {
+    // Teleport near the mission and start it
+    plane.position.copy(nearest.pos).add(new THREE.Vector3(0, 150, -250));
+    plane.quaternion.identity();
+    controller.velocity.set(0, 0, 0);
+    state = State.PLAYING;
+    startMinigame(nearest);
+  } else {
+    // All missions cleared — resume free flight
+    state = State.PLAYING;
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
+    plane.position.addScaledVector(fwd, 250);
+    plane.position.y += 100;
+  }
+}
+
 function wireUI() {
   document.getElementById('btn-start').addEventListener('click', startGame);
   document.getElementById('btn-leaderboard').addEventListener('click', () => {
@@ -816,13 +1137,19 @@ function wireUI() {
   document.getElementById('btn-pause-controls').addEventListener('click', () => setActiveScreen('controls-screen'));
   document.getElementById('btn-quit').addEventListener('click', quitToMenu);
 
-  document.getElementById('btn-result-continue').addEventListener('click', () => {
+  // Result screen actions
+  document.getElementById('btn-result-continue').addEventListener('click', resultContinue);
+  document.getElementById('btn-result-retry').addEventListener('click', resultRetry);
+  document.getElementById('btn-result-next').addEventListener('click', resultNext);
+  document.getElementById('btn-result-menu').addEventListener('click', () => {
     document.getElementById('result-screen').classList.remove('active');
-    state = State.PLAYING;
-    // nudge plane away from marker so the prompt doesn't re-trigger instantly
-    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(plane.quaternion);
-    plane.position.addScaledVector(fwd, 250);
-    plane.position.y += 100;
+    quitToMenu();
+  });
+  // Keyboard shortcuts for result screen (R=Retry, N=Next) — gated to State.RESULT
+  document.addEventListener('keydown', (e) => {
+    if (state !== State.RESULT) return;
+    if (e.key.toLowerCase() === 'r') resultRetry();
+    else if (e.key.toLowerCase() === 'n') resultNext();
   });
 
   document.querySelectorAll('.lb-tabs .tab').forEach(t => {
@@ -897,6 +1224,7 @@ setupScene();
 wireUI();
 wireSettings();
 loadSettings();
+_updateLvChip();   // show level on start screen at boot
 loop(performance.now());
 
 // =====================================================
@@ -943,21 +1271,19 @@ window.__sky = {
   THREE,
   startGame,
   // Advance the simulation deterministically by `dt` seconds (no rAF needed).
+  // NOTE: hit-stop is NOT applied here — tick() is always full speed for determinism.
   tick(dt = 1 / 60) {
     if (isFlying()) simulate(dt);
     renderFrame();
   },
   // Teleport to a mission and start its minigame immediately.
-  forceMinigame(mode) {
-    const m = missions.find(x => x.mode === mode);
-    if (!m) return null;
-    plane.position.copy(m.pos).add(new THREE.Vector3(0, 150, -250));
-    plane.quaternion.identity();
-    controller.velocity.set(0, 0, 0);
-    state = State.PLAYING;
-    startMinigame(m);
-    return activeMinigame;
-  },
+  forceMinigame,
+  // Mastery loop: progression profile / medals (read-only)
+  get profile() { return progression.getProfile(); },
+  get medals()  { return progression.getMedals();  },
+  // Hit-stop (readable + triggerable for tests)
+  get hitStop() { return _hitStop; },
+  triggerHitStop,
   frameStats() {
     const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
     return {

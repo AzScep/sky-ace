@@ -24,13 +24,21 @@ test('[BUG] ring & gate courses stay inside the flyable bounds', async ({ page }
     const gateOk = check(gatePts);
     const gateMax = Math.max(...gatePts.map(p => Math.max(Math.abs(p.x), Math.abs(p.z))));
 
-    return { LIMIT, ringOk, gateOk, ringMax, gateMax };
+    // Flux Run nodes use the same BOUND = WORLD_SIZE * 0.42 clamp.
+    const flux = sky.forceMinigame('flux');
+    const fluxPts = flux.nodes.map(n => n.position);
+    const fluxOk = check(fluxPts);
+    const fluxMax = Math.max(...fluxPts.map(p => Math.max(Math.abs(p.x), Math.abs(p.z))));
+
+    return { LIMIT, ringOk, gateOk, ringMax, gateMax, fluxOk, fluxMax };
   });
 
   expect(res.ringMax).toBeLessThanOrEqual(res.LIMIT);
   expect(res.gateMax).toBeLessThanOrEqual(res.LIMIT);
   expect(res.ringOk).toBe(true);
   expect(res.gateOk).toBe(true);
+  expect(res.fluxMax).toBeLessThanOrEqual(res.LIMIT);
+  expect(res.fluxOk).toBe(true);
 });
 
 // REGRESSION for [BUG] "flight control keys react while in menu/result screens".

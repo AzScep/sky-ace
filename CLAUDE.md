@@ -16,7 +16,7 @@ HTTP (e.g. `node tests/server.js`, then open `http://localhost:4173`) — openin
 directly with `file://` will not work (ES module + importmap requirements).
 
 **Cache-busting convention:** local module imports carry a `?v=N` query string
-(`./world.js?v=5`, `./leaderboard.js?v=4`, `game.js?v=5` in `index.html`). When you change
+(`./world.js?v=9`, `./leaderboard.js?v=9`, `game.js?v=9` in `index.html`). When you change
 a module's public interface and need to force browsers/CDN caches to reload, bump that
 number — but bump it **consistently** across every import of that module and the
 `<script src>` in `index.html`, or the importmap will load two different versions.
@@ -99,8 +99,9 @@ These are encoded in regression tests; breaking them re-breaks shipped fixes.
 
 - **Spawn inside the flyable world.** The flight loop hard-clamps the plane to
   `±(WORLD_SIZE * 0.45)`. Any minigame course element placed beyond that wall is physically
-  unreachable. `minigames.js` `keepInBounds()` clamps spawns to `COURSE_BOUND = WORLD_SIZE*0.4`
-  and reflects the course direction inward. Also raise course elements to at least
+  unreachable. `minigames.js` currently keeps Ring Run and Canyon Dash courses inside an
+  inline `const BOUND = WORLD_SIZE * 0.42` clamp (there is no shared `COURSE_BOUND` or
+  `keepInBounds()` helper in the live code). Also raise course elements to at least
   `terrainHeight(x,z) + ~120` or they bury inside mountain peaks (the soft-floor then lifts
   the plane above them). Covered by `tests/regression.spec.js` + `tests/minigames.spec.js`.
 - **Gate flight keys behind `isFlying()`.** Camera/reset/fire callbacks must do nothing in

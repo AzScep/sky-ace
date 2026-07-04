@@ -10,14 +10,27 @@ export const MODES = {
   canyon:   { name: 'Canyon Dash',    scoreLabel: 'POINTS' },
   bomb:     { name: 'Precision Drop', scoreLabel: 'POINTS' },
   dogfight: { name: 'Dogfight',       scoreLabel: 'POINTS' },
+  flux:     { name: 'Flux Run',       scoreLabel: 'POINTS' },
 };
 
-// Grade thresholds (per-mode) used to convert raw scores to S/A/B/C/D
+// Grade thresholds [C, B, A, S, SS] per mode.
+// Calibrated by Phase C test engineer after measuring sloppy / clean / flawless
+// reference runs via forceMinigame + scripted ticks (see tests/calibrate.spec.js).
+//
+// Measured reference scores:
+//   ring:     sloppy(no-combo,all-perfects)=5599  clean/flawless(full-combo)=10293
+//   canyon:   sloppy(no-combo)=2700  clean(full-combo)=6522
+//   bomb:     sloppy(62u miss)≈900  clean(3 bullseyes+bonus)=3700
+//   dogfight: sloppy(no-streak)=6611  flawless(full-streak)=9911
+//   flux:     sloppy(bank-1-at-a-time)=3900  clean(bank-5)=4940  flawless(all-28)=11440
+//
+// Grade targets: sloppy ≈ B, clean ≈ A/S, flawless ≈ SS.
 const THRESHOLDS = {
-  ring:     [400, 800, 1400, 2200, 3200], // D, C, B, A, S, SS
-  canyon:   [300, 600, 1000, 1600, 2400],
-  bomb:     [200, 500, 900, 1500, 2200],
-  dogfight: [300, 700, 1200, 2000, 3000],
+  ring:     [800,  2500,  5000,  8000, 10000],
+  canyon:   [700,  1500,  3000,  5500,  7000],
+  bomb:     [400,  1100,  2000,  2900,  3500],
+  dogfight: [1500, 3500,  6000,  8000,  9500],
+  flux:     [1500, 3000,  4500,  6000, 10000],
 };
 
 export function gradeFor(mode, score) {

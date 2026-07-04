@@ -6,8 +6,9 @@
 
 const FILES = {
   // looping music (routed through the music bus)
-  music_menu:   { src: 'assets/audio/music_menu.mp3',     gain: 0.50, loop: true, music: true },
-  music_action: { src: 'assets/audio/music_action.mp3',   gain: 0.45, loop: true, music: true },
+  music_menu:     { src: 'assets/audio/music_menu.mp3',     gain: 0.50, loop: true, music: true },
+  music_action:   { src: 'assets/audio/music_action.mp3',   gain: 0.45, loop: true, music: true },
+  music_dogfight: { src: 'assets/audio/music_dogfight.mp3', gain: 0.45, loop: true, music: true },
   fanfare:      { src: 'assets/audio/fanfare_victory.mp3', gain: 0.75, music: true },
   // looping engine (sfx bus, gain/rate driven live by throttle & speed)
   engine:       { src: 'assets/audio/engine_loop.mp3',    gain: 0.22, loop: true },
@@ -28,7 +29,7 @@ const VOICE = {
   failed:   'assets/audio/vo_failed.mp3',
 };
 
-const MUSIC_TRACKS = ['music_menu', 'music_action'];
+const MUSIC_TRACKS = ['music_menu', 'music_action', 'music_dogfight'];
 const MUTE_KEY = 'sky_ace_muted';
 
 class AudioManager {
@@ -47,6 +48,10 @@ class AudioManager {
     this._voEndTime = 0;
     this._loops = {};        // name -> { src, gain }
     this._loadPromise = null;
+    // muffle (lowpass inserted into master chain in init())
+    this.muffleFilter = null;
+    this._muffleOn    = false;
+    this._muffleBaseGain = 1.0;  // nominal musicGain when not voice-ducked
   }
 
   // Must be called from a user gesture (browsers block audio otherwise).
@@ -56,7 +61,15 @@ class AudioManager {
     this.ctx = new AC();
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = this.muted ? 0 : this.volume;
-    this.masterGain.connect(this.ctx.destination);
+    // Insert the muffle lowpass filter into the master chain so the graph is:
+    //   masterGain -> muffleFilter -> destination
+    // Initialised fully open (20 kHz) so it is inaudible until setMuffle(true).
+    this.muffleFilter = this.ctx.createBiquadFilter();
+    this.muffleFilter.type = 'lowpass';
+    this.muffleFilter.frequency.value = 20000;
+    this.muffleFilter.Q.value = 0.0001;
+    this.masterGain.connect(this.muffleFilter);
+    this.muffleFilter.connect(this.ctx.destination);
     this.musicGain = this.ctx.createGain();
     this.musicGain.connect(this.masterGain);
     this.sfxGain = this.ctx.createGain();
@@ -218,6 +231,87 @@ class AudioManager {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
     o.connect(g); g.connect(this.sfxGain);
     o.start(t); o.stop(t + 0.1);
+  }
+
+  // ---- muffle (pause lowpass) ----
+  // Inserts a single persistent BiquadFilterNode already wired in init().
+  // Safe to call before init() — no-ops when ctx/filter are not yet created.
+  setMuffle(on, ramp = 0.18) {
+    if (!this.ctx || !this.muffleFilter) return;
+    this._muffleOn = on;
+    const now = this.ctx.currentTime;
+    // Ramp filter cutoff: 20000 (transparent) ↔ 320 Hz (muffled)
+    const freq = this.muffleFilter.frequency;
+    freq.cancelScheduledValues(now);
+    freq.setValueAtTime(freq.value, now);
+    freq.linearRampToValueAtTime(on ? 320 : 20000, now + ramp);
+    // Ramp Q: tiny (flat) ↔ 0.9 (mild resonance on muffled edge)
+    const q = this.muffleFilter.Q;
+    q.cancelScheduledValues(now);
+    q.setValueAtTime(q.value, now);
+    q.linearRampToValueAtTime(on ? 0.9 : 0.0001, now + ramp);
+    // Duck / restore music gain relative to the nominal (non-voice-ducked) level.
+    // _muffleBaseGain tracks the target outside of voice-ducking (default 1.0).
+    const mg = this.musicGain.gain;
+    mg.cancelScheduledValues(now);
+    mg.setValueAtTime(mg.value, now);
+    mg.linearRampToValueAtTime(on ? this._muffleBaseGain * 0.6 : this._muffleBaseGain, now + ramp);
+  }
+
+  // ---- synthesized one-shots (all routed to sfxGain, all respect mute) ----
+
+  // Generic square blip — public primitive that callers can pitch/time freely.
+  beep(freq, dur = 0.12, gain = 0.06) {
+    if (!this.ready || !this.ctx || this.muted) return;
+    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = 'square';
+    const t = this.ctx.currentTime;
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.sfxGain);
+    o.start(t); o.stop(t + dur + 0.01);
+  }
+
+  // UI hover — soft sine ping.
+  hover() {
+    if (!this.ready || !this.ctx || this.muted) return;
+    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = 'sine';
+    const t = this.ctx.currentTime;
+    o.frequency.setValueAtTime(1100, t);
+    g.gain.setValueAtTime(0.03, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.035);
+    o.connect(g); g.connect(this.sfxGain);
+    o.start(t); o.stop(t + 0.045);
+  }
+
+  // UI confirm — ascending square sweep (perfect fifth: 520 → 784 Hz).
+  confirm() {
+    if (!this.ready || !this.ctx || this.muted) return;
+    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = 'square';
+    const t = this.ctx.currentTime;
+    o.frequency.setValueAtTime(520, t);
+    o.frequency.linearRampToValueAtTime(784, t + 0.06);
+    g.gain.setValueAtTime(0.05, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+    o.connect(g); g.connect(this.sfxGain);
+    o.start(t); o.stop(t + 0.08);
+  }
+
+  // UI back/cancel — descending square sweep.
+  back() {
+    if (!this.ready || !this.ctx || this.muted) return;
+    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = 'square';
+    const t = this.ctx.currentTime;
+    o.frequency.setValueAtTime(600, t);
+    o.frequency.linearRampToValueAtTime(400, t + 0.05);
+    g.gain.setValueAtTime(0.05, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+    o.connect(g); g.connect(this.sfxGain);
+    o.start(t); o.stop(t + 0.07);
   }
 }
 

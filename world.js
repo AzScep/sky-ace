@@ -6,6 +6,15 @@ import * as THREE from 'three';
 
 export const WORLD_SIZE = 8000;
 
+// Locked synthwave palette (shared with fx.js, game.js, minigames.js)
+export const NEON = Object.freeze({
+  dark:   0x1a0b2e,
+  pink:   0xff2e88,
+  purple: 0xb14bff,
+  cyan:   0x00ffd5,
+  gold:   0xffcf4d,
+});
+
 // Deterministic value-noise for terrain
 function hash(x, y) {
   const h = Math.sin(x * 374.7 + y * 921.3) * 43758.5453;
@@ -47,6 +56,51 @@ export function terrainHeight(x, z) {
   return h * 800 - 100;  // -100 to ~700
 }
 
+// ----- Neon horizon-city procedural canvas -----
+// Paints a 1024×256 skyline: dark #1a0b2e buildings with #ff2e88/#00ffd5 windows.
+// Top pixels stay transparent so the sky shows through above the rooftops.
+function _buildCityCanvas() {
+  const W = 1024, H = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H); // fully transparent start
+
+  const DARK = '#1a0b2e';
+  const WIN_COLORS = ['#ff2e88', '#00ffd5'];
+
+  // Packed buildings left→right; overshoot W slightly to avoid a right-edge gap
+  let x = 0;
+  while (x < W + 50) {
+    const bw = 12 + Math.floor(Math.random() * 36);
+    const bh = 38 + Math.floor(Math.random() * 190);
+    const px = x % (W + 1); // wrap X for near-seamless join
+
+    // Building silhouette (opaque dark mass)
+    ctx.fillStyle = DARK;
+    ctx.fillRect(px, H - bh, bw, bh);
+
+    // Rooftop accent (1-px neon line)
+    ctx.fillStyle = WIN_COLORS[Math.random() > 0.5 ? 0 : 1];
+    ctx.fillRect(px, H - bh, bw, 2);
+
+    // Windows
+    const wCols = Math.max(1, Math.floor((bw - 6) / 9));
+    const wRows = Math.floor((bh - 14) / 14);
+    for (let row = 0; row < wRows; row++) {
+      for (let col = 0; col < wCols; col++) {
+        if (Math.random() > 0.42) continue; // ~58% dark
+        ctx.fillStyle = WIN_COLORS[Math.random() > 0.5 ? 0 : 1];
+        ctx.fillRect(px + 3 + col * 9, H - bh + 10 + row * 14, 5, 7);
+      }
+    }
+
+    // Small random gap between buildings (gives skyline variety)
+    x += bw + (Math.random() > 0.55 ? Math.floor(Math.random() * 7) : 0);
+  }
+  return canvas;
+}
+
 export function buildWorld(scene) {
   // ----- TEXTURES (Higgsfield-generated, seamless) -----
   const texLoader = new THREE.TextureLoader();
@@ -72,9 +126,45 @@ export function buildWorld(scene) {
   scene.background = skyTex;
   const sky = skyTex;
 
-  // ----- SUN -----
-  const sunGeo = new THREE.SphereGeometry(120, 16, 16);
-  const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff0c0 });
+  // ----- SUN — banded synthwave ShaderMaterial -----
+  // Same sphere mesh; game.renderFrame calls sunRef.lookAt(camera.position) each frame
+  // so the sphere billboards. After lookAt, the sphere's local -Z points toward camera,
+  // meaning vNorm.xy is the camera-plane offset and length(vNorm.xy) is radial distance
+  // from the disc centre (0=centre, 1=limb). vNorm.y = vertical position on disc.
+  const sunGeo = new THREE.SphereGeometry(120, 24, 24);
+  const sunMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uCore: { value: new THREE.Color(0xffcf4d) }, // gold centre
+      uEdge: { value: new THREE.Color(0xff2e88) }, // magenta limb
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vNorm;
+      void main() {
+        vNorm = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec3 vNorm;
+      uniform vec3 uCore;
+      uniform vec3 uEdge;
+      void main() {
+        float r = length(vNorm.xy);           // 0=centre, 1=limb
+        float alpha = 1.0 - smoothstep(0.82, 1.0, r);
+        if (alpha < 0.001) discard;
+        // Radial gradient: gold core → magenta edge
+        vec3 col = mix(uCore, uEdge, smoothstep(0.0, 1.0, r));
+        // Horizontal bands only in the lower half (classic synthwave sun)
+        float bandT = clamp(-vNorm.y, 0.0, 1.0);   // >0 in lower half
+        float band  = fract(bandT * 7.0);
+        float gap   = step(0.78, band) * step(0.08, bandT);
+        col = mix(col, col * 0.12, gap);
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+  });
   const sun = new THREE.Mesh(sunGeo, sunMat);
   sun.position.set(2000, 1400, -2500);
   scene.add(sun);
@@ -198,7 +288,42 @@ export function buildWorld(scene) {
   scene.add(clouds);
 
   // ----- FOG -----
+  // NOTE for Phase B: fog color left at 0x88a8c8 (matches setClearColor in game.setupScene).
+  // If Phase B wants dusk tint, update BOTH fog.color AND renderer.setClearColor together.
   scene.fog = new THREE.Fog(0x88a8c8, 1500, 6500);
+
+  // ----- NEON HORIZON CITY -----
+  // One open cylinder rendered from the inside (BackSide) at the world edge.
+  // Canvas-painted skyline texture: lit neon windows on a dark mass, transparent above rooftops.
+  // Sits fully inside fog (radius 3600, fog near=1500 far=6500) so it fades naturally.
+  // Budget: 1 draw call (2 with bloom), ~256 tris.
+  {
+    const cityCanvas = _buildCityCanvas();
+    const cityTex = new THREE.CanvasTexture(cityCanvas);
+    cityTex.wrapS = THREE.RepeatWrapping;
+    cityTex.colorSpace = THREE.SRGBColorSpace;
+
+    const cityMat = new THREE.MeshBasicMaterial({
+      map: cityTex,
+      side: THREE.BackSide,      // render interior surface (player is inside the cylinder)
+      transparent: true,
+      alphaTest: 0.05,           // clip fully-transparent sky pixels, preserve window glow
+      depthWrite: false,         // additive-friendly; city is distant decoration
+      fog: true,
+    });
+
+    // 64 radial segments → ~256 tris (open, no caps)
+    const cityGeo = new THREE.CylinderGeometry(
+      WORLD_SIZE * 0.45, WORLD_SIZE * 0.45,  // top/bottom radius (= 3600)
+      700,                                    // height
+      64, 1,                                  // radial segs, height segs
+      true                                    // openEnded (no caps)
+    );
+    const city = new THREE.Mesh(cityGeo, cityMat);
+    city.position.y = 280; // centre at 280 → spans y=-70 to y=630 (above typical terrain)
+    city.frustumCulled = false; // always visible from inside
+    scene.add(city);
+  }
 
   // ----- SCATTERED TREES (sprite-cheap pyramids) -----
   const trees = new THREE.Group();
