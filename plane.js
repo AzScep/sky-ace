@@ -7,85 +7,74 @@ import * as THREE from 'three';
 export function createPlane() {
   const plane = new THREE.Group();
 
-  // Neon-jet palette: dark airframe with self-lit cyan trim + magenta canopy
-  // so the plane reads as pure light under the bloom pass.
-  const bodyMat = new THREE.MeshPhongMaterial({ color: 0x1b1140, emissive: 0x0a0820, shininess: 80 });
-  const accentMat = new THREE.MeshBasicMaterial({ color: 0x00ffd5 });           // glowing cyan trim
-  const darkMat = new THREE.MeshPhongMaterial({ color: 0x0d0a22 });
-  const glassMat = new THREE.MeshBasicMaterial({
-    color: 0xff2e88, transparent: true, opacity: 0.7,                            // magenta canopy glow
+  // Arcade jet: a light metallic airframe (reads against both the realistic sky
+  // and the dark synthwave grid) with self-lit cyan trim + a gold afterburner so
+  // the silhouette pops under the bloom pass. Nose points +Z.
+  // Low metalness on purpose: the scene has no environment map, so a high-metalness
+  // PBR surface would render dark/dull (nothing to reflect). Low metal = properly lit.
+  const bodyMat  = new THREE.MeshStandardMaterial({ color: 0xc4cdda, metalness: 0.15, roughness: 0.55 });
+  const darkMat  = new THREE.MeshStandardMaterial({ color: 0x2a3040, metalness: 0.2,  roughness: 0.6 });
+  const trimMat  = new THREE.MeshBasicMaterial({ color: 0x00ffd5 });                 // self-lit cyan trim (NEON.cyan)
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x1a2740, metalness: 0.1, roughness: 0.15,
+    emissive: 0xff2e88, emissiveIntensity: 0.35,                                     // tinted canopy, faint magenta glow
   });
+  const glowMat  = new THREE.MeshBasicMaterial({ color: 0xffcf4d, side: THREE.DoubleSide }); // afterburner core
 
-  // Fuselage
-  const fuselage = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.8, 0.6, 9, 12),
-    bodyMat
-  );
+  // Fuselage — tapered body, fatter at the tail
+  const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.75, 7, 14), bodyMat);
   fuselage.rotation.x = Math.PI / 2;
   plane.add(fuselage);
 
   // Nose cone
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.8, 2, 12), bodyMat);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.55, 2.4, 14), bodyMat);
   nose.rotation.x = -Math.PI / 2;
-  nose.position.z = 5.5;
+  nose.position.z = 4.7;
   plane.add(nose);
 
-  // Cockpit canopy
+  // Cockpit canopy — small + integrated near the nose (not a floating blob)
   const canopy = new THREE.Mesh(
-    new THREE.SphereGeometry(0.8, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.SphereGeometry(0.55, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2),
     glassMat
   );
-  canopy.position.set(0, 0.5, 1.8);
-  canopy.scale.set(1, 1, 2.2);
+  canopy.position.set(0, 0.42, 2.0);
+  canopy.scale.set(1, 0.85, 1.8);
   plane.add(canopy);
 
-  // Main wings
-  const wingGeo = new THREE.BoxGeometry(11, 0.2, 2.2);
-  const wing = new THREE.Mesh(wingGeo, bodyMat);
-  wing.position.y = -0.1;
+  // Delta wing — wide + thick enough to stay readable from the chase cam
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(13, 0.35, 3.6), bodyMat);
+  wing.position.set(0, -0.15, -0.4);
   plane.add(wing);
+  // Cyan leading-edge trim across the full span — this is what makes the wing pop
+  const wingTrim = new THREE.Mesh(new THREE.BoxGeometry(13, 0.16, 0.5), trimMat);
+  wingTrim.position.set(0, -0.02, 1.3);
+  plane.add(wingTrim);
 
-  // Wing accent stripes
-  const stripe = new THREE.Mesh(new THREE.BoxGeometry(11, 0.22, 0.4), accentMat);
-  stripe.position.set(0, -0.09, 0.8);
-  plane.add(stripe);
+  // Twin canted tail fins — highly readable from behind
+  for (const side of [-1, 1]) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.7, 1.7), bodyMat);
+    fin.position.set(side * 1.3, 0.75, -3.1);
+    fin.rotation.z = side * 0.34;   // cant outward
+    plane.add(fin);
+    const finTrim = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.4, 0.16), trimMat);
+    finTrim.position.set(side * 1.55, 0.95, -3.65);
+    finTrim.rotation.z = side * 0.34;
+    plane.add(finTrim);
+  }
 
-  // Tail vertical fin
-  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.6, 1.6), bodyMat);
-  fin.position.set(0, 0.8, -4);
-  plane.add(fin);
-
-  // Tail horizontal
-  const hStab = new THREE.Mesh(new THREE.BoxGeometry(4, 0.15, 1.2), bodyMat);
-  hStab.position.set(0, 0.1, -4);
+  // Horizontal stabilizers
+  const hStab = new THREE.Mesh(new THREE.BoxGeometry(5, 0.18, 1.4), bodyMat);
+  hStab.position.set(0, 0.05, -3.2);
   plane.add(hStab);
 
-  // Engine pods on wings
-  for (const side of [-1, 1]) {
-    const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 2, 8), darkMat);
-    pod.rotation.x = Math.PI / 2;
-    pod.position.set(side * 2.8, -0.3, 0.5);
-    plane.add(pod);
-
-    // Propeller disc (visual blur)
-    const propDisc = new THREE.Mesh(
-      new THREE.CircleGeometry(0.6, 16),
-      new THREE.MeshBasicMaterial({
-        color: 0xcccccc, transparent: true, opacity: 0.3, side: THREE.DoubleSide,
-      })
-    );
-    propDisc.position.set(side * 2.8, -0.3, 1.6);
-    plane.add(propDisc);
-    plane.userData[side === -1 ? 'propL' : 'propR'] = propDisc;
-  }
-
-  // Bottom landing skids
-  const skidMat = new THREE.MeshPhongMaterial({ color: 0x444444 });
-  for (const side of [-1, 1]) {
-    const skid = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.6, 1.5), skidMat);
-    skid.position.set(side * 0.8, -1, 0);
-    plane.add(skid);
-  }
+  // Afterburner nozzle — dark ring + emissive core; reads as a jet from the chase view
+  const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.68, 0.9, 14), darkMat);
+  nozzle.rotation.x = Math.PI / 2;
+  nozzle.position.z = -3.6;
+  plane.add(nozzle);
+  const burn = new THREE.Mesh(new THREE.CircleGeometry(0.46, 16), glowMat);
+  burn.position.z = -4.05;
+  plane.add(burn);
 
   plane.userData.isPlane = true;
   return plane;
@@ -109,12 +98,13 @@ export class PlaneController {
     this.minSpeed = 30;
     this.maxSpeed = 240;
     this.boostSpeed = 320;
-    this.throttleResponse = 0.4;
-    this.turnAuthority = 1.6;
+    this.throttleResponse = 1.0;
+    this.turnAuthority = 1.9;   // bank→heading turn rate (was 1.6, hardcoded & dead; now wired + a bit faster)
 
     // Player control preferences (driven by the Settings menu).
     this.invertPitch = false;   // swap pitch-up / pitch-down
     this.sensitivity = 1;       // scales commanded roll/pitch/yaw rates
+    this.levelAssist = 0.25;    // 0 = holds banks/pitch perfectly, 1 = today's aggressive auto-level
 
     this.alive = true;
 
@@ -149,7 +139,7 @@ export class PlaneController {
 
     const targetSpeed = (this.boosting ? this.boostSpeed
                                        : this.minSpeed + (this.maxSpeed - this.minSpeed) * this.throttle);
-    this.speed += (targetSpeed - this.speed) * Math.min(1, dt * 0.8);
+    this.speed += (targetSpeed - this.speed) * Math.min(1, dt * 1.6);
 
     // ----- Inputs -----
     const pitchSign = this.invertPitch ? -1 : 1;
@@ -169,7 +159,7 @@ export class PlaneController {
     // Player sensitivity scales the commanded rates (not the auto-level springs).
     const s = this.sensitivity;
     // Rolling is snappy (immediate feedback)
-    const rollTarget = tRoll * 2.6 * s;
+    const rollTarget = tRoll * 2.85 * s;
     // Pitch with comfortable rate
     const pitchTarget = tPitch * 1.4 * s;
     // Rudder yaw (Q/E) is gentle
@@ -180,13 +170,13 @@ export class PlaneController {
     let rollCorrection = 0;
     if (tRoll === 0) {
       // Strong pull back to level when player isn't actively rolling
-      rollCorrection = -bankSin * 3.0;
+      rollCorrection = -bankSin * 3.0 * this.levelAssist;
     }
 
     // When no pitch input, very gently level pitch (so nose doesn't drift up/down forever)
     let pitchCorrection = 0;
     if (tPitch === 0) {
-      pitchCorrection = -noseUpSin * 0.6;
+      pitchCorrection = -noseUpSin * 0.6 * this.levelAssist;
     }
 
     // Smooth rate (responsive but not jittery)
@@ -203,18 +193,13 @@ export class PlaneController {
     // Banking induces yaw — this is what makes A/D actually TURN the plane.
     // bankSin > 0 (banked left) → yaw left (positive rotateY in this convention)
     // Scaled by how level the nose is so it doesn't spin when pointing straight up/down.
-    const turnFromBank = bankSin * 1.6 * Math.max(0.3, 1 - Math.abs(noseUpSin));
+    const turnFromBank = bankSin * this.turnAuthority * Math.max(0.3, 1 - Math.abs(noseUpSin));
     this.plane.rotateY(turnFromBank * dt);
 
     // Recompute forward after rotation
     const newForward = this._forward.set(0,0,1).applyQuaternion(this.plane.quaternion);
     this.velocity.copy(newForward).multiplyScalar(this.speed);
     this.plane.position.addScaledVector(this.velocity, dt);
-
-    // Propeller spin visuals
-    const spin = (this.throttle * 30 + (this.boosting ? 20 : 0)) * dt;
-    if (this.plane.userData.propL) this.plane.userData.propL.rotation.z += spin;
-    if (this.plane.userData.propR) this.plane.userData.propR.rotation.z += spin;
   }
 
   // Public state for HUD

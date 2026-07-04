@@ -15,6 +15,10 @@ export const NEON = Object.freeze({
   gold:   0xffcf4d,
 });
 
+// Realistic-look haze. Single source of truth for the daytime fog, the renderer
+// clear color (game.js), and setLook()'s realistic descriptor — keep them in lockstep.
+export const REALISTIC_HAZE = 0x88a8c8;
+
 // Deterministic value-noise for terrain
 function hash(x, y) {
   const h = Math.sin(x * 374.7 + y * 921.3) * 43758.5453;
@@ -288,9 +292,9 @@ export function buildWorld(scene) {
   scene.add(clouds);
 
   // ----- FOG -----
-  // NOTE for Phase B: fog color left at 0x88a8c8 (matches setClearColor in game.setupScene).
-  // If Phase B wants dusk tint, update BOTH fog.color AND renderer.setClearColor together.
-  scene.fog = new THREE.Fog(0x88a8c8, 1500, 6500);
+  // Fog color = REALISTIC_HAZE, shared with the renderer clear color (game.js) and
+  // setLook()'s realistic descriptor. Change the constant, not these call sites.
+  scene.fog = new THREE.Fog(REALISTIC_HAZE, 1500, 6500);
 
   // ----- NEON HORIZON CITY -----
   // One open cylinder rendered from the inside (BackSide) at the world edge.
@@ -349,7 +353,65 @@ export function buildWorld(scene) {
   }
   scene.add(trees);
 
-  return { terrain, water, clouds, sky, sun };
+  // ----- SYNTHWAVE ALT LOOK (built once here; toggled by setLook, never rebuilt) -----
+  // ponytail: the dark ground + "grid" read reuses the terrain's existing onBeforeCompile
+  // shader-injection pattern (see terrainMat above) instead of a second wireframe mesh, so
+  // toggling look adds zero draw calls. The banded sun (~L129) and neon horizon city
+  // (~L300) are left shared across both looks unchanged — not worth branching for now.
+  const gridColor = new THREE.Color(NEON.cyan);
+  const altTerrainMat = new THREE.MeshStandardMaterial({
+    color: NEON.dark,
+    flatShading: true,
+    roughness: 0.9,
+    metalness: 0.1,
+  });
+  altTerrainMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uGridColor = { value: gridColor };
+    shader.vertexShader = 'varying vec3 vWPosGrid;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      '#include <begin_vertex>\n  vWPosGrid = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+    );
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n varying vec3 vWPosGrid;\n uniform vec3 uGridColor;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec2 cell = abs(fract(vWPosGrid.xz / 200.0) - 0.5);
+          float line = 1.0 - smoothstep(0.0, 0.03, min(cell.x, cell.y));
+          diffuseColor.rgb = mix(diffuseColor.rgb, uGridColor, line);
+        }
+      `);
+  };
+
+  // Flat gradient canvas as scene.background (no equirect mapping needed for a plain
+  // vertical gradient): magenta horizon fading to dark purple zenith.
+  const hexStr = (n) => '#' + n.toString(16).padStart(6, '0');
+  const skyCanvas = document.createElement('canvas');
+  skyCanvas.width = 4; skyCanvas.height = 256;
+  const skyCtx = skyCanvas.getContext('2d');
+  const skyGrad = skyCtx.createLinearGradient(0, 256, 0, 0); // bottom (horizon) -> top (zenith)
+  skyGrad.addColorStop(0, hexStr(NEON.pink));
+  skyGrad.addColorStop(1, hexStr(NEON.purple));
+  skyCtx.fillStyle = skyGrad;
+  skyCtx.fillRect(0, 0, 4, 256);
+  const altSky = new THREE.CanvasTexture(skyCanvas);
+  altSky.colorSpace = THREE.SRGBColorSpace;
+
+  // Swaps material/background/fog refs only — never rebuilds geometry or loads a
+  // texture, so it's safe to call repeatedly (re-toggle-safe, no leak).
+  function setLook(mode) {
+    if (mode === 'synthwave') {
+      terrain.material = altTerrainMat;
+      scene.background = altSky;
+      scene.fog.color.set(NEON.dark);
+      return { clearColor: NEON.dark, bloomStrength: 1.1 };
+    }
+    terrain.material = terrainMat;
+    scene.background = skyTex;
+    scene.fog.color.set(REALISTIC_HAZE);
+    return { clearColor: REALISTIC_HAZE, bloomStrength: 0.6 };
+  }
+
+  return { terrain, water, clouds, sky, sun, setLook };
 }
 
 // ----- Mission marker (large pillar of light) -----

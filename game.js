@@ -7,13 +7,43 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE } from './world.js?v=10';
-import { createPlane, PlaneController, Input } from './plane.js?v=10';
-import { RingRun, CanyonDash, PrecisionDrop, Dogfight, FluxRun } from './minigames.js?v=10';
-import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=10';
-import { audio } from './audio.js?v=10';
-import { FX, Trail } from './fx.js?v=10';
-import * as progression from './progression.js?v=10';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE, REALISTIC_HAZE } from './world.js?v=11';
+import { createPlane, PlaneController, Input } from './plane.js?v=11';
+import { RingRun, CanyonDash, PrecisionDrop, Dogfight, FluxRun } from './minigames.js?v=11';
+import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=11';
+import { audio } from './audio.js?v=11';
+import { FX } from './fx.js?v=11';
+import * as progression from './progression.js?v=11';
+
+// --- Plane 3D model (Higgsfield-generated GLB) — swaps in over the primitive once loaded ---
+const PLANE_MODEL_URL  = 'assets/models/skyace.glb';
+const PLANE_MODEL_SIZE = 13;                    // normalize the model's largest horizontal extent to this (world units)
+const PLANE_MODEL_ROT  = { x: 0, y: Math.PI / 2, z: 0 };  // GLB nose sits on -X; +90° about Y faces it +Z (travel dir). Verified live.
+const _gltfLoader = new GLTFLoader();
+function loadPlaneModel(planeGroup) {
+  _gltfLoader.load(PLANE_MODEL_URL, (gltf) => {
+    const model = gltf.scene;
+    const box = new THREE.Box3().setFromObject(model);
+    const size = new THREE.Vector3(); box.getSize(size);
+    const center = new THREE.Vector3(); box.getCenter(center);
+    const extent = Math.max(size.x, size.z) || 1;
+    model.position.sub(center);                 // recenter the mesh on the group origin
+    const pivot = new THREE.Group();
+    pivot.add(model);
+    pivot.scale.setScalar(PLANE_MODEL_SIZE / extent);
+    pivot.rotation.set(PLANE_MODEL_ROT.x, PLANE_MODEL_ROT.y, PLANE_MODEL_ROT.z);
+    // Swap the primitive visual for the model but keep the physics Group intact.
+    // Dispose the primitive geometry/materials first — they were already uploaded to the GPU.
+    for (let i = planeGroup.children.length - 1; i >= 0; i--) {
+      const child = planeGroup.children[i];
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+      planeGroup.remove(child);
+    }
+    planeGroup.add(pivot);
+  }, undefined, () => { /* load failed — keep the primitive fallback, no throw */ });
+}
 
 // ----- State -----
 const State = {
@@ -57,9 +87,11 @@ let _onboardStep = 0;  // 0=throttle, 1=bank, 2=marker, -1=done
 const DEFAULT_SETTINGS = {
   invertPitch: false,
   sensitivity: 1.0,
+  levelAssist: 0.25,
   reducedMotion: false,
   colorblind: false,
   volume: 0.7,
+  look: 'realistic',
 };
 let settings = { ...DEFAULT_SETTINGS };
 
@@ -79,7 +111,7 @@ function setupScene() {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setClearColor(0x88a8c8);
+  renderer.setClearColor(REALISTIC_HAZE);
   // Reinhard tone mapping keeps additive FX + bloom from clipping to flat white.
   renderer.toneMapping = THREE.ReinhardToneMapping;
   renderer.toneMappingExposure = 1.15;
@@ -92,6 +124,7 @@ function setupScene() {
 
   plane = createPlane();
   scene.add(plane);
+  loadPlaneModel(plane);   // async: swaps the Higgsfield GLB in over the primitive when ready
   controller = new PlaneController(plane);
   controller.reset(new THREE.Vector3(0, 350, 0));
 
@@ -633,8 +666,10 @@ function updateAudio(dt) {
     audio.resume();
     if (!audio.isLoopActive('engine')) audio.startLoop('engine');
     const t = THREE.MathUtils.clamp((controller.speed - 30) / (320 - 30), 0, 1);
-    const rate = 0.78 + t * 0.95;
-    const gain = 0.16 + controller.throttle * 0.18 + (controller.boosting ? 0.16 : 0);
+    // Subtler pitch bend + lower gain so the short engine loop doesn't read as a
+    // repeated "whoosh" pulse. ponytail: blind tune — can't audition audio here; re-judged live.
+    const rate = 0.92 + t * 0.5;
+    const gain = 0.12 + controller.throttle * 0.13 + (controller.boosting ? 0.14 : 0);
     audio.setLoopParams('engine', gain, rate, 0.12);
 
     if (controller.boosting && !prevBoost) audio.play('boost');
@@ -691,7 +726,16 @@ function applySettings() {
   if (controller) {
     controller.invertPitch = settings.invertPitch;
     controller.sensitivity = settings.sensitivity;
+    controller.levelAssist = settings.levelAssist;
   }
+  if (world) applyLook(settings.look);
+}
+// world.js owns terrain/sky/fog; the clear color + bloom strength live in game.js
+// (renderer + bloomPass), so this stitches world's descriptor back onto both.
+function applyLook(mode) {
+  const d = world.setLook(mode);
+  renderer.setClearColor(d.clearColor);
+  if (bloomPass) bloomPass.strength = d.bloomStrength;
 }
 // Reflect current settings onto the menu controls.
 function syncSettingsUI() {
@@ -700,8 +744,12 @@ function syncSettingsUI() {
   inv.checked = settings.invertPitch;
   document.getElementById('set-sens').value = settings.sensitivity;
   document.getElementById('set-sens-val').textContent = `${settings.sensitivity.toFixed(1)}×`;
+  document.getElementById('set-assist').value = settings.levelAssist;
+  document.getElementById('set-assist-val').textContent = settings.levelAssist.toFixed(2);
   document.getElementById('set-reduced').checked = settings.reducedMotion;
   document.getElementById('set-colorblind').checked = settings.colorblind;
+  const look = document.getElementById('set-look');
+  if (look) look.checked = settings.look === 'synthwave';
   const volPct = Math.round(settings.volume * 100);
   document.getElementById('set-volume').value = volPct;
   document.getElementById('set-volume-val').textContent = `${volPct}%`;
@@ -711,14 +759,18 @@ function commitSettings() { applySettings(); syncSettingsUI(); saveSettings(); }
 function wireSettings() {
   const inv = document.getElementById('set-invert');
   const sens = document.getElementById('set-sens');
+  const assist = document.getElementById('set-assist');
   const red = document.getElementById('set-reduced');
   const cb = document.getElementById('set-colorblind');
   const vol = document.getElementById('set-volume');
+  const look = document.getElementById('set-look');
   inv.addEventListener('change', () => { settings.invertPitch = inv.checked; commitSettings(); });
   sens.addEventListener('input', () => { settings.sensitivity = parseFloat(sens.value); commitSettings(); });
+  assist.addEventListener('input', () => { settings.levelAssist = parseFloat(assist.value); commitSettings(); });
   red.addEventListener('change', () => { settings.reducedMotion = red.checked; commitSettings(); });
   cb.addEventListener('change', () => { settings.colorblind = cb.checked; commitSettings(); });
   vol.addEventListener('input', () => { settings.volume = parseInt(vol.value, 10) / 100; commitSettings(); });
+  look.addEventListener('change', () => { settings.look = look.checked ? 'synthwave' : 'realistic'; commitSettings(); });
   const openSettings = () => setActiveScreen('settings-screen');
   document.getElementById('btn-settings').addEventListener('click', openSettings);
   document.getElementById('btn-pause-settings').addEventListener('click', openSettings);
@@ -978,7 +1030,7 @@ function startGame() {
 
   // Init / recycle the wingtip trail for this session
   if (_trail) { _trail.dispose(); _trail = null; }
-  _trail = new Trail(scene);
+  // ponytail: wingtip trail removed — user disliked it. To restore: re-import Trail from fx.js and add `_trail = new Trail(scene);` here.
 
   audio.init().then(() => {
     audio.resume();
@@ -1268,6 +1320,8 @@ window.__sky = {
   },
   // Toggle bloom on/off so perf.spec can A/B frame time (no-bloom vs bloom).
   setBloom(on) { useBloom = !!on; },
+  // Live look A/B for the demo + look.spec: swaps terrain/sky/fog/clear/bloom together.
+  setLook(m) { settings.look = m; commitSettings(); },   // applies + syncs the toggle + persists (one code path)
   THREE,
   startGame,
   // Advance the simulation deterministically by `dt` seconds (no rAF needed).
