@@ -15,6 +15,7 @@ import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor 
 import { audio } from './audio.js?v=11';
 import { FX } from './fx.js?v=11';
 import * as progression from './progression.js?v=11';
+import { Traffic } from './traffic.js?v=11';
 
 // --- Plane 3D model (Higgsfield-generated GLB) — swaps in over the primitive once loaded ---
 const PLANE_MODEL_URL  = 'assets/models/skyace.glb';
@@ -68,6 +69,7 @@ let cameraMode = 0;           // 0 = chase, 1 = cockpit, 2 = cinematic
 let lastTime = performance.now();
 let minimapCtx;
 let fx;                       // particle FX system
+let traffic = null;           // ambient air traffic (traffic.js)
 let prevBoost = false;        // for boost-whoosh edge detection
 let shake = 0;                // current camera-shake magnitude
 let reducedMotion = false;       // mirrors settings.reducedMotion for hot paths
@@ -141,6 +143,8 @@ function setupScene() {
   input.onFire   = () => { if (isFlying()) handleFire(); };
 
   setupMissions();
+
+  traffic = new Traffic(scene);   // ambient air traffic — the sky is alive
 
   minimapCtx = document.getElementById('minimap-canvas').getContext('2d');
 
@@ -681,6 +685,18 @@ function drawMinimap() {
     }
   }
 
+  // Ambient traffic — small gold blips (no edge arrows; they're just flavor)
+  if (traffic) {
+    ctx.fillStyle = '#ffcf4d';   // NEON.gold
+    for (const c of traffic.craft) {
+      const p = worldToMap(c.position.x, c.position.z);
+      if (p.x < 3 || p.x > W - 3 || p.y < 3 || p.y > H - 3) continue;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   // Player at center
   ctx.fillStyle = '#00ff88';
   ctx.save();
@@ -928,6 +944,8 @@ function simulate(dt) {
     checkMissions();
   }
 
+  if (traffic) traffic.update(dt, plane.position);   // ambient flock wanders the sky
+
   // Animate mission marker rings + pulse the halo / beam.
   const pulse = 0.7 + Math.sin(performance.now() / 350) * 0.3;
   for (const m of missions) {
@@ -1065,6 +1083,10 @@ function startGame() {
   totalScore = 0;
   _crashCooldown = 0;   // clear any cooldown left armed by a crash in a prior session
 
+  // Recycle ambient traffic for a fresh session (reset positions), like the trail.
+  if (traffic) traffic.dispose();
+  traffic = new Traffic(scene);
+
   // Init / recycle the wingtip trail for this session
   if (_trail) { _trail.dispose(); _trail = null; }
   // ponytail: wingtip trail removed — user disliked it. To restore: re-import Trail from fx.js and add `_trail = new Trail(scene);` here.
@@ -1094,6 +1116,7 @@ function togglePause() {
 
 function quitToMenu() {
   if (activeMinigame) { activeMinigame.cleanup(); activeMinigame = null; }
+  if (traffic) { traffic.dispose(); traffic = null; }
   if (_trail) { _trail.dispose(); _trail = null; }
   document.getElementById('minigame-hud').classList.add('hidden');
   document.getElementById('game-hud').classList.add('hidden');
@@ -1327,6 +1350,7 @@ window.__sky = {
   get missions() { return missions; },
   get crashCount() { return _crashCount; },
   get lastResult() { return _lastResult; },   // { reason, win, completed } — guards landmine #1
+  get traffic() { return traffic; },
   get renderCalls() { return renderer.info.render.calls; },
   get renderTris() { return renderer.info.render.triangles; },
   get world() { return world; },
