@@ -43,13 +43,14 @@ test('[BLOOM] EffectComposer + UnrealBloomPass are active in the render path', a
   expect(b.threshold).toBeLessThan(1);
 });
 
-test('[MAP] realistic sky, textured terrain, clouds, water and sun all render', async ({ page }) => {
+test('[MAP] dynamic sky dome, textured terrain, clouds, water and sun all render', async ({ page }) => {
   await boot(page);
   const w = await page.evaluate(() => {
     const sky = window.__sky;
     const wd = sky.world;
     return {
-      hasBackground: !!sky.scene.background,                  // equirect painterly sky
+      hasSkyDome: !!(wd.skyDome && wd.skyDome.parent),        // dynamic atmospheric sky (replaces the static photo)
+      hasStars: !!(wd.stars && wd.stars.parent),
       hasSun: !!wd.sun && !!wd.sun.parent,
       terrainMat: wd.terrain ? wd.terrain.material.type : null,
       cloudCount: wd.clouds ? wd.clouds.children.length : 0,   // billboard cloud sprites
@@ -57,7 +58,8 @@ test('[MAP] realistic sky, textured terrain, clouds, water and sun all render', 
       fogColor: sky.scene.fog ? sky.scene.fog.color.getHexString() : null,
     };
   });
-  expect(w.hasBackground).toBe(true);
+  expect(w.hasSkyDome).toBe(true);
+  expect(w.hasStars).toBe(true);
   expect(w.hasSun).toBe(true);
   expect(w.terrainMat).toBe('MeshStandardMaterial');   // height/slope-blended texture shader
   expect(w.cloudCount).toBeGreaterThan(0);

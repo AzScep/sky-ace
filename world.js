@@ -3,6 +3,7 @@
 // =====================================================
 
 import * as THREE from 'three';
+import { Sky } from 'three/addons/objects/Sky.js';
 
 export const WORLD_SIZE = 8000;
 
@@ -121,14 +122,84 @@ export function buildWorld(scene) {
   const texSand  = tiled('assets/img/tex/sand.jpg');
   const texWater = tiled('assets/img/tex/water.jpg');
 
-  // ----- SKY (Higgsfield painterly equirectangular backdrop) -----
-  // Three's built-in background skybox handles color management + the azimuth
-  // seam correctly (a raw dome shader rendered the image too dark).
-  const skyTex = texLoader.load('assets/img/sky.jpg');
-  skyTex.colorSpace = THREE.SRGBColorSpace;
-  skyTex.mapping = THREE.EquirectangularReflectionMapping;
-  scene.background = skyTex;
-  const sky = skyTex;
+  // ----- SKY — dynamic atmospheric scattering (Three.js Sky), driven by setTimeOfDay -----
+  // Replaces the old static equirectangular photo. The dome follows the camera (game.js
+  // renderFrame) and renders behind everything (depthTest off, renderOrder -1) so it reads
+  // as an infinite backdrop within the 8000 far-plane. The sun position sets sky colour →
+  // real sunrise/sunset/night falls out of the scattering.
+  const skyDome = new Sky();
+  skyDome.scale.setScalar(6000);
+  skyDome.material.depthTest = false;
+  skyDome.material.depthWrite = false;
+  skyDome.renderOrder = -1;
+  skyDome.frustumCulled = false;
+  scene.add(skyDome);
+  const skyU = skyDome.material.uniforms;
+  // Clear-day air: low turbidity = crisp clean sky (not hazy/immersive), moderate rayleigh
+  // = a real blue, small mie = a contained sun (no white-out). The 0.75 exposure keeps the
+  // higher daytime sun from blowing out.
+  skyU.turbidity.value = 2;
+  skyU.rayleigh.value = 2.0;
+  skyU.mieCoefficient.value = 0.0022;
+  skyU.mieDirectionalG.value = 0.7;
+  scene.background = null;   // the dome is the backdrop now (realistic look)
+
+  // ----- STARS (one Points field; opacity fades in at night via setTimeOfDay) -----
+  const starGeo = new THREE.BufferGeometry();
+  const STAR_N = 1400;
+  const starArr = new Float32Array(STAR_N * 3);
+  for (let i = 0; i < STAR_N; i++) {
+    const th = 2 * Math.PI * Math.random();
+    const ph = Math.acos(1 - Math.random());   // upper hemisphere (y >= 0)
+    const r = 5200;
+    starArr[i * 3]     = r * Math.sin(ph) * Math.cos(th);
+    starArr[i * 3 + 1] = r * Math.cos(ph);
+    starArr[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(starArr, 3));
+  // fog:false — stars are camera-followed at radius 5200; at night fog.far shrinks to ~4200,
+  // which would otherwise paint the whole star field in the night haze colour (invisible).
+  const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 18, sizeAttenuation: true, transparent: true, opacity: 0, depthWrite: false, fog: false });
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.frustumCulled = false;
+  scene.add(stars);
+
+  // ----- CLEAR-DAY SKY (hand-authored blue gradient) -----
+  // The physically-based Sky desaturates to pale grey in daylight, so the DAY sky is a clean
+  // gradient blue we control to the exact colour. Its opacity is driven by setTimeOfDay: fully
+  // on in clear daylight, faded out at dusk/night so the atmospheric Sky shows through. Follows
+  // the camera (game.js renderFrame), renders over the atmospheric dome (-1) but under terrain.
+  const dayMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uHorizon: { value: new THREE.Color(0xbcd9f2) },  // pale blue at the horizon
+      uZenith:  { value: new THREE.Color(0x3d7fd0) },   // clean blue overhead
+      uOpacity: { value: 0 },
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vDir;
+      void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec3 vDir;
+      uniform vec3 uHorizon; uniform vec3 uZenith; uniform float uOpacity;
+      void main() {
+        float h = clamp(vDir.y * 1.4 + 0.12, 0.0, 1.0);
+        gl_FragColor = vec4(mix(uHorizon, uZenith, pow(h, 0.7)), uOpacity);
+      }
+    `,
+    side: THREE.BackSide,
+    transparent: true,
+    depthTest: true,     // MUST be true: transparent objects draw after opaque terrain, so
+    depthWrite: false,   // without depth-test this dome paints over the ground. Terrain occludes it.
+  });
+  // Radius 7900 sits just inside the 8000 far plane and beyond the farthest VISIBLE terrain
+  // (camera clamped to ±3600, terrain edge ±4000 → max straight-across distance ~7600), so
+  // terrain always occludes this transparent dome instead of the dome painting a 'sky wall'
+  // over distant hills. (Diagonal far corners are already clipped by the 8000 far plane.)
+  const dayDome = new THREE.Mesh(new THREE.SphereGeometry(7900, 24, 16), dayMat);
+  dayDome.renderOrder = -0.5;    // over the atmospheric sky (-1), under the terrain (0)
+  dayDome.frustumCulled = false;
+  scene.add(dayDome);
 
   // ----- SUN — banded synthwave ShaderMaterial -----
   // Same sphere mesh; game.renderFrame calls sunRef.lookAt(camera.position) each frame
@@ -294,20 +365,21 @@ export function buildWorld(scene) {
   // ----- FOG -----
   // Fog color = REALISTIC_HAZE, shared with the renderer clear color (game.js) and
   // setLook()'s realistic descriptor. Change the constant, not these call sites.
-  scene.fog = new THREE.Fog(REALISTIC_HAZE, 1500, 6500);
+  scene.fog = new THREE.Fog(REALISTIC_HAZE, 2400, 7500);
 
   // ----- NEON HORIZON CITY -----
   // One open cylinder rendered from the inside (BackSide) at the world edge.
   // Canvas-painted skyline texture: lit neon windows on a dark mass, transparent above rooftops.
   // Sits fully inside fog (radius 3600, fog near=1500 far=6500) so it fades naturally.
-  // Budget: 1 draw call (2 with bloom), ~256 tris.
+  // Budget: 1 draw call (2 with bloom), ~256 tris. Opacity faded by day-factor in setTimeOfDay.
+  let cityMat;
   {
     const cityCanvas = _buildCityCanvas();
     const cityTex = new THREE.CanvasTexture(cityCanvas);
     cityTex.wrapS = THREE.RepeatWrapping;
     cityTex.colorSpace = THREE.SRGBColorSpace;
 
-    const cityMat = new THREE.MeshBasicMaterial({
+    cityMat = new THREE.MeshBasicMaterial({
       map: cityTex,
       side: THREE.BackSide,      // render interior surface (player is inside the cylinder)
       transparent: true,
@@ -396,22 +468,89 @@ export function buildWorld(scene) {
   const altSky = new THREE.CanvasTexture(skyCanvas);
   altSky.colorSpace = THREE.SRGBColorSpace;
 
-  // Swaps material/background/fog refs only — never rebuilds geometry or loads a
-  // texture, so it's safe to call repeatedly (re-toggle-safe, no leak).
+  // ----- DAY / NIGHT -----
+  // One clock (t in [0,1): 0 midnight, 0.25 dawn, 0.5 noon, 0.75 dusk) drives the sun
+  // direction (→ atmospheric sky colour), the key/ambient/hemi lights, fog, stars,
+  // cloud tint and bloom. Mutates existing handles only; scratch colours below keep it
+  // per-frame-alloc-free, so it's safe to call every frame.
+  const ELEV_MAX = 42;   // real daytime sun (clear blue day); dusk/night still moody near the horizon
+  const _sunDir = new THREE.Vector3();
+  const _colDay = new THREE.Color(0xfff2d8);      // noon key light (warm white)
+  const _colDusk = new THREE.Color(0xff8a4a);     // low-sun warmth
+  const _colNightAmb = new THREE.Color(0x24304a);
+  const _colDayAmb = new THREE.Color(0xb0c8e0);
+  const _hazeDay = new THREE.Color(REALISTIC_HAZE);
+  const _hazeNight = new THREE.Color(0x0a1226);
+  const _hazeDusk = new THREE.Color(0xd8825a);
+  const _cloudDay = new THREE.Color(0xf4f6fb);
+  const _cloudNight = new THREE.Color(0x2a3350);
+  const _fog = new THREE.Color();
+  const _todDesc = { clearColor: 0, bloomStrength: 0 };   // reused each frame — no hot-path alloc
+  function setTimeOfDay(t) {
+    const elev = -Math.cos(2 * Math.PI * t) * ELEV_MAX;     // deg: -max midnight .. +max noon
+    const azi = 100 + 200 * t;                              // slow east -> west drift
+    _sunDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - elev), THREE.MathUtils.degToRad(azi));
+    skyU.sunPosition.value.copy(_sunDir);
+    sun.position.copy(_sunDir).multiplyScalar(3000);        // synthwave disc tracks the arc
+    dir.position.copy(_sunDir).multiplyScalar(3000);        // key light follows the sun
+    const day = THREE.MathUtils.clamp((elev + 4) / 16, 0, 1);              // 0 night .. 1 sun up
+    const gold = THREE.MathUtils.clamp(1 - Math.abs(elev) / 16, 0, 1); // warm near horizon; 0 once |elev|>=16 (smooth, no step)
+    dir.intensity = 0.04 + 0.85 * day;      // dimmer peak — user graded "too bright"
+    dir.color.copy(_colDay).lerp(_colDusk, gold);
+    ambient.intensity = 0.14 + 0.28 * day;
+    ambient.color.copy(_colNightAmb).lerp(_colDayAmb, day);
+    hemi.intensity = 0.08 + 0.22 * day;
+    _fog.copy(_hazeNight).lerp(_hazeDay, day).lerp(_hazeDusk, gold * 0.6);
+    scene.fog.color.copy(_fog);
+    // Crisp/clear by day (fog pushed out past the view), hazy/moody at dusk & night.
+    scene.fog.near = 1500 + 5500 * day;
+    scene.fog.far = 4200 + 10800 * day;
+    stars.material.opacity = THREE.MathUtils.clamp(1 - day * 1.4, 0, 1);
+    dayMat.uniforms.uOpacity.value = THREE.MathUtils.smoothstep(day, 0.5, 0.95);   // clean blue only in full daylight
+    cloudMat.color.copy(_cloudNight).lerp(_cloudDay, day).lerp(_hazeDusk, gold * 0.4);
+    // Neon horizon city glows at night/dusk, fades out in bright day (it's out of place in a
+    // clean blue sky, and the day fog no longer reaches it). Turns a fog gap into a nice beat.
+    if (cityMat) cityMat.opacity = THREE.MathUtils.clamp(1 - day * 1.3, 0, 1);
+    _todDesc.clearColor = _fog.getHex();
+    _todDesc.bloomStrength = 1.05 - 0.5 * day;
+    return _todDesc;
+  }
+
+  // Swaps material/dome/background/fog refs only — never rebuilds geometry, so it's safe
+  // to call repeatedly. The day/night cycle re-applies fog/clear/bloom on top (realistic).
   function setLook(mode) {
     if (mode === 'synthwave') {
       terrain.material = altTerrainMat;
+      skyDome.visible = false;
+      dayDome.visible = false;
+      stars.visible = false;
+      sun.visible = true;
       scene.background = altSky;
       scene.fog.color.set(NEON.dark);
-      return { clearColor: NEON.dark, bloomStrength: 1.1 };
+      // setTimeOfDay only drives the realistic look; restore the FIXED lighting/fog/city/cloud
+      // state the neon look expects, else toggling to synthwave inherits stale realistic (e.g.
+      // night → near-black) state on these shared handles.
+      dir.intensity = 1.1; dir.color.set(0xfff0d8); dir.position.set(2000, 1400, -2500);
+      ambient.intensity = 0.55; ambient.color.set(0xb0c8e0);
+      hemi.intensity = 0.4;
+      sun.position.set(2000, 1400, -2500);
+      scene.fog.near = 1500; scene.fog.far = 6500;
+      cloudMat.color.set(0xffffff);
+      if (cityMat) cityMat.opacity = 1;
+      return { clearColor: NEON.dark, bloomStrength: 1.1, exposure: 1.15 };
     }
     terrain.material = terrainMat;
-    scene.background = skyTex;
+    skyDome.visible = true;
+    dayDome.visible = true;            // gradient day sky (opacity driven by setTimeOfDay)
+    stars.visible = true;
+    sun.visible = false;               // the atmospheric dome renders its own sun
+    scene.background = null;
     scene.fog.color.set(REALISTIC_HAZE);
-    return { clearColor: REALISTIC_HAZE, bloomStrength: 0.6 };
+    // fog near/far, lights, cloud tint & city opacity are driven by setTimeOfDay (applied next).
+    return { clearColor: REALISTIC_HAZE, bloomStrength: 0.6, exposure: 0.75 };
   }
 
-  return { terrain, water, clouds, sky, sun, setLook };
+  return { terrain, water, clouds, sun, skyDome, dayDome, stars, setLook, setTimeOfDay };
 }
 
 // ----- Mission marker (large pillar of light) -----

@@ -8,14 +8,14 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE, REALISTIC_HAZE } from './world.js?v=11';
-import { createPlane, PlaneController, Input } from './plane.js?v=11';
-import { RingRun, CanyonDash, PrecisionDrop, Dogfight, FluxRun } from './minigames.js?v=11';
-import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=11';
-import { audio } from './audio.js?v=11';
-import { FX } from './fx.js?v=11';
-import * as progression from './progression.js?v=11';
-import { Traffic } from './traffic.js?v=11';
+import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE, REALISTIC_HAZE } from './world.js?v=12';
+import { createPlane, PlaneController, Input } from './plane.js?v=12';
+import { RingRun, CanyonDash, PrecisionDrop, Dogfight, FluxRun } from './minigames.js?v=12';
+import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=12';
+import { audio } from './audio.js?v=12';
+import { FX } from './fx.js?v=12';
+import * as progression from './progression.js?v=12';
+import { Traffic } from './traffic.js?v=12';
 
 // --- Plane 3D model (Higgsfield-generated GLB) — swaps in over the primitive once loaded ---
 const PLANE_MODEL_URL  = 'assets/models/skyace.glb';
@@ -96,6 +96,10 @@ const BUZZ_MIN_SPEED = 140;      // must be going this fast — a buzz is a high
 const BUZZ_COOLDOWN = 8;         // seconds per craft — can't farm the same plane
 let _buzzCount = 0;              // read by tests via __sky.buzzCount
 let _simClock = 0;              // dt-accumulated sim time (deterministic; drives buzz cooldowns)
+// ---- day / night cycle ----
+let _timeOfDay = 0.5;            // [0,1): 0 midnight, 0.25 dawn, 0.5 noon, 0.75 dusk
+let _dayNight = 'auto';          // 'auto' advances the clock; 'manual' holds _timeOfDay (tests/scrub)
+const DAY_LENGTH = 150;          // seconds per full day (prototype pace — tuned live)
 // ---- camera FOV smoothing (module-level, no per-frame alloc) ----
 let _fovCurrent = 70;
 let _fovTarget  = 70;
@@ -111,6 +115,7 @@ const DEFAULT_SETTINGS = {
   colorblind: false,
   volume: 0.7,
   look: 'realistic',
+  dayCycle: true,     // day/night cycle auto-advances (frozen under reduced-motion)
 };
 let settings = { ...DEFAULT_SETTINGS };
 
@@ -138,8 +143,11 @@ function setupScene() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(REALISTIC_HAZE);
   // Reinhard tone mapping keeps additive FX + bloom from clipping to flat white.
+  // Exposure dropped from 1.15 → 0.75 for the dynamic atmospheric sky: the old value
+  // blew the daytime sky to white and washed the (backlit) plane out. Darker = moodier,
+  // and glow needs darkness.
   renderer.toneMapping = THREE.ReinhardToneMapping;
-  renderer.toneMappingExposure = 1.15;
+  renderer.toneMappingExposure = 0.75;
 
   world = buildWorld(scene);
   fx = new FX(scene);
@@ -210,6 +218,10 @@ function setupBloom() {
 function renderFrame() {
   renderer.info.reset();
   if (sunRef) sunRef.lookAt(camera.position);
+  // Keep the atmospheric sky + gradient day sky + stars centred on the camera → infinite backdrop.
+  if (world.skyDome) world.skyDome.position.copy(camera.position);
+  if (world.dayDome) world.dayDome.position.copy(camera.position);
+  if (world.stars) world.stars.position.copy(camera.position);
   if (useBloom && composer) composer.render();
   else renderer.render(scene, camera);
 }
@@ -823,12 +835,25 @@ function applySettings() {
     controller.sensitivity = settings.sensitivity;
     controller.levelAssist = settings.levelAssist;
   }
+  // Day/night auto-advances unless disabled or reduced-motion (accessibility: a moving sky
+  // is motion). 'off' holds the current time-of-day; the sky is still applied each frame.
+  _dayNight = (settings.dayCycle && !settings.reducedMotion) ? 'auto' : 'off';
   if (world) applyLook(settings.look);
 }
 // world.js owns terrain/sky/fog; the clear color + bloom strength live in game.js
 // (renderer + bloomPass), so this stitches world's descriptor back onto both.
 function applyLook(mode) {
   const d = world.setLook(mode);
+  renderer.setClearColor(d.clearColor);
+  if (bloomPass) bloomPass.strength = d.bloomStrength;
+  if (d.exposure != null) renderer.toneMappingExposure = d.exposure;   // per-look (synthwave was authored brighter)
+  // The day/night cycle owns fog/clear/bloom on top of the realistic look.
+  if (mode === 'realistic' && world.setTimeOfDay) applyTimeOfDay();
+}
+
+// Apply the current time-of-day: sun/sky/lights (world) + clear colour & bloom (game).
+function applyTimeOfDay() {
+  const d = world.setTimeOfDay(_timeOfDay);
   renderer.setClearColor(d.clearColor);
   if (bloomPass) bloomPass.strength = d.bloomStrength;
 }
@@ -845,6 +870,8 @@ function syncSettingsUI() {
   document.getElementById('set-colorblind').checked = settings.colorblind;
   const look = document.getElementById('set-look');
   if (look) look.checked = settings.look === 'synthwave';
+  const daycycle = document.getElementById('set-daycycle');
+  if (daycycle) daycycle.checked = settings.dayCycle;
   const volPct = Math.round(settings.volume * 100);
   document.getElementById('set-volume').value = volPct;
   document.getElementById('set-volume-val').textContent = `${volPct}%`;
@@ -866,6 +893,8 @@ function wireSettings() {
   cb.addEventListener('change', () => { settings.colorblind = cb.checked; commitSettings(); });
   vol.addEventListener('input', () => { settings.volume = parseInt(vol.value, 10) / 100; commitSettings(); });
   look.addEventListener('change', () => { settings.look = look.checked ? 'synthwave' : 'realistic'; commitSettings(); });
+  const daycycle = document.getElementById('set-daycycle');
+  if (daycycle) daycycle.addEventListener('change', () => { settings.dayCycle = daycycle.checked; commitSettings(); });
   const openSettings = () => setActiveScreen('settings-screen');
   document.getElementById('btn-settings').addEventListener('click', openSettings);
   document.getElementById('btn-pause-settings').addEventListener('click', openSettings);
@@ -1022,6 +1051,23 @@ function simulate(dt) {
       const prog = progression.grantXp(25, 'buzz');
       if (prog.leveledUp) { audio.play('fanfare'); flashScreen(0.22, '#b14bff'); }
       showToast('BUZZ! +150');
+    }
+  }
+
+  // Day/night — advance the sun and grade the whole realistic scene from one clock. Only when
+  // auto: a frozen cycle ('off'/manual/reduced-motion) is already applied via applyLook/scrub,
+  // so re-grading it every frame is pure wasted work (and per-frame alloc).
+  if (world.setTimeOfDay && settings.look === 'realistic' && _dayNight === 'auto') {
+    _timeOfDay = (_timeOfDay + dt / DAY_LENGTH) % 1;
+    applyTimeOfDay();
+  }
+  // Clouds drift on a light wind, wrapping at the world edge (zero-alloc indexed loop).
+  if (world.clouds && !reducedMotion) {
+    const lim = WORLD_SIZE * 0.5;
+    const cs = world.clouds.children;
+    for (let i = 0; i < cs.length; i++) {
+      cs[i].position.x += dt * 7;
+      if (cs[i].position.x > lim) cs[i].position.x -= WORLD_SIZE;
     }
   }
 
@@ -1517,6 +1563,10 @@ window.__sky = {
   setBloom(on) { useBloom = !!on; },
   // Live look A/B for the demo + look.spec: swaps terrain/sky/fog/clear/bloom together.
   setLook(m) { settings.look = m; commitSettings(); },   // applies + syncs the toggle + persists (one code path)
+  get timeOfDay() { return _timeOfDay; },
+  setTimeOfDay(t) { _timeOfDay = ((t % 1) + 1) % 1; _dayNight = 'manual'; applyTimeOfDay(); },
+  get dayNight() { return _dayNight; },
+  setDayNight(m) { _dayNight = m; },
   THREE,
   startGame,
   // Advance the simulation deterministically by `dt` seconds (no rAF needed).

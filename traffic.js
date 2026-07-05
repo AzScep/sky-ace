@@ -11,7 +11,7 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { WORLD_SIZE, terrainHeight } from './world.js?v=11';
+import { WORLD_SIZE, terrainHeight } from './world.js?v=12';
 
 const BOUND = WORLD_SIZE * 0.42;             // same flyable box the courses use
 const ALT_MIN = 180, ALT_SPAN = 720;         // cruise 180..900 above terrain
