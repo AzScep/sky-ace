@@ -28,13 +28,16 @@ test('[CRASH] free-flight crash respawns above the ground, still playing', async
     sky.controller.speed = 80;
     const g0 = sky.terrainHeight(p.x, p.z);
     p.y = g0 - 50;
-    sky.tick(1 / 60);
+    sky.tick(1 / 60);                 // crash → explosive death-cam hold begins (plane still buried)
+    const crashCount = sky.crashCount;
+    // Tick through the death-cam hold; respawnCrash() lifts us clear when it ends.
+    for (let i = 0; i < 120 && sky.crashFreeze > 0; i++) sky.tick(1 / 60);
     const g1 = sky.terrainHeight(sky.plane.position.x, sky.plane.position.z);
-    return { crashCount: sky.crashCount, y: sky.plane.position.y, ground: g1, state: sky.state };
+    return { crashCount, y: sky.plane.position.y, ground: g1, state: sky.state };
   });
 
-  expect(out.crashCount).toBe(1);
-  expect(out.y).toBeGreaterThan(out.ground);   // respawned clear of the ground
+  expect(out.crashCount).toBe(1);              // the crash counted on the impact tick
+  expect(out.y).toBeGreaterThan(out.ground);   // respawned clear of the ground after the hold
   expect(out.state).toBe('playing');           // free-flight crash keeps you flying
   assertNoErrors(errors, 'Errors during free-flight crash test');
 });
@@ -98,6 +101,40 @@ test('[CRASH] flying into terrain during a minigame ends the run as CRASHED', as
   // A crash must NOT retire the mission (marker stays live; waypoint keeps guiding you back).
   expect(out.canyonCleared).toBe(false);
   assertNoErrors(errors, 'Errors during minigame-crash test');
+});
+
+test('[CRASH] death-cam does not auto-enter a nearby mission while the wreck is frozen', async ({ page }) => {
+  // Regression (xhigh review F2): the free-flight death-cam leaves the plane buried near the
+  // ground for CRASH_FREEZE seconds. checkMissions() proximity-auto-enters a minigame at <100u,
+  // so a crash on top of a mission marker used to flip state → minigame mid-cinematic. The
+  // `_crashFreeze <= 0` gate on checkMissions must suppress mission entry for the whole hold.
+  const errors = captureErrors(page);
+  await boot(page);
+  await startMission(page);
+
+  const out = await page.evaluate(() => {
+    const sky = window.__sky;
+    const m = sky.missions[0];
+    const p = sky.plane.position;
+    sky.plane.quaternion.identity();
+    sky.controller.speed = 80;
+    p.x = m.pos.x; p.z = m.pos.z;                     // sit right on a mission marker's XZ
+    p.y = sky.terrainHeight(p.x, p.z) - 50;           // buried → crashes this tick
+    const states = [];
+    sky.tick(1 / 60);                                 // crash tick → freeze begins
+    states.push(sky.state);
+    for (let i = 0; i < 120 && sky.crashFreeze > 0; i++) { sky.tick(1 / 60); states.push(sky.state); }
+    return {
+      crashCount: sky.crashCount,
+      everEnteredMinigame: states.some(s => s === 'minigame'),
+      finalState: sky.state,
+    };
+  });
+
+  expect(out.crashCount).toBe(1);
+  expect(out.everEnteredMinigame).toBe(false);   // no auto-entry during the death-cam
+  expect(out.finalState).toBe('playing');        // still free flight after respawn
+  assertNoErrors(errors, 'Errors during death-cam mission-gate test');
 });
 
 test('[CRASH] resuming free flight after a crash lands clear of terrain (no instant re-crash)', async ({ page }) => {

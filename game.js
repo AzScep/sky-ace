@@ -83,8 +83,13 @@ let _lastMinigameMode = null;    // for Retry button
 let _lastResult = null;          // { reason, win, completed } of the last minigame — read by tests
 // ---- crash / terrain-collision state ----
 const CRASH_MARGIN = 6;          // crash when the plane dips within this of terrain height
+const CRASH_FREEZE = 0.9;        // death-cam hold: seconds the wreck burns before we respawn
 let _crashCount = 0;             // free-flight crashes (respawns) — read by tests via __sky.crashCount
 let _crashCooldown = 0;          // seconds; blocks re-triggering crash while respawning/recovering
+let _crashFreeze = 0;            // seconds left in the explosive death-cam (plane frozen + hidden)
+let _crashBurst = 0;            // secondary-explosion timer during the freeze
+const _crashPos = new THREE.Vector3();    // frozen crash location — reused, no per-frame alloc
+const _crashJitter = new THREE.Vector3(); // scratch for scattered secondary bursts
 // ---- buzz verb (scream past ambient traffic for score + XP) ----
 const BUZZ_RADIUS = 60;          // how close to a craft counts as a buzz
 const BUZZ_MIN_SPEED = 140;      // must be going this fast — a buzz is a high-speed pass
@@ -112,6 +117,12 @@ let settings = { ...DEFAULT_SETTINGS };
 // True while the player is actively in flight (not in a menu/result screen).
 function isFlying() {
   return state === State.PLAYING || state === State.MINIGAME;
+}
+// True while the player actually has control: flying AND not mid crash death-cam.
+// During the freeze the wreck is hidden/frozen at the impact point, so flight keys
+// (reset/camera/fire) and mission auto-entry must not fire against it.
+function controlsLive() {
+  return isFlying() && _crashFreeze <= 0;
 }
 
 // =====================================================
@@ -146,9 +157,9 @@ function setupScene() {
   input = new Input();
   // Gate flight controls so menu/result screens don't react to flight keys.
   input.onPause = togglePause;  // Esc is valid in PLAYING/MINIGAME/PAUSED (togglePause guards itself)
-  input.onCamera = () => { if (isFlying()) cycleCamera(); };
-  input.onReset  = () => { if (isFlying()) resetFlight(); };
-  input.onFire   = () => { if (isFlying()) handleFire(); };
+  input.onCamera = () => { if (controlsLive()) cycleCamera(); };
+  input.onReset  = () => { if (controlsLive()) resetFlight(); };
+  input.onFire   = () => { if (controlsLive()) handleFire(); };
 
   setupMissions();
 
@@ -344,27 +355,47 @@ function resetFlight() {
 // Terrain collision. In a minigame it ends the run as CRASHED; in free flight it
 // respawns you clear of the ground.
 function crash() {
-  fx.explosion(plane.position.clone(), 1.6);
-  addShake(1.6);
-  flashScreen(0.3, '#ff6a4d');
-  audio.playVoice('failed');
-
   if (activeMinigame) {
     // Real teeth for Canyon Dash + low passes: fly into terrain and you fail the run.
     // No cooldown needed — endMinigame fires THIS same tick and leaves the MINIGAME state,
     // so the crash check can't re-fire (arming it here would leak into the next free session).
+    fx.explosion(plane.position.clone(), 1.8);
+    audio.play('explosion');
+    addShake(1.8);
+    flashScreen(0.35, '#ff6a4d');
+    audio.playVoice('failed');
     activeMinigame.finish('CRASHED');
     return;
   }
-  // Free flight — no score to lose; respawn well above ground, level, at cruise.
-  _crashCooldown = 1.2;               // block re-trigger while the respawn lifts us clear
+  // Free flight — no score to lose, so make it a spectacle: a big fireball, a boom, a
+  // white-hot flash + max shake, then a brief death-cam hold on the wreck before we
+  // respawn clear of the ground (respawnCrash() ends the hold). The plane is hidden and
+  // frozen at the impact point during the hold so the camera actually sees the explosion.
+  if (_crashFreeze > 0) return;      // already dying — don't restack
   _crashCount++;
+  _crashPos.copy(plane.position);
+  fx.explosion(_crashPos, 2.8);
+  audio.play('explosion');
+  audio.playVoice('failed');
+  addShake(3.0);
+  flashScreen(0.55, '#ffe6c0');
+  plane.visible = false;             // the jet is gone — it blew apart
+  controller.velocity.set(0, 0, 0);
+  controller.speed = 0;
+  _crashFreeze = CRASH_FREEZE;
+  _crashBurst = 0;
+  showToast('CRASHED — RECOVERING');
+}
+
+// End the death-cam: lift the plane clear of the ground, level, at cruise, and re-show it.
+function respawnCrash() {
   const ground = terrainHeight(plane.position.x, plane.position.z);
   plane.position.y = ground + 250;
   plane.quaternion.identity();
+  plane.visible = true;
   controller.velocity.set(0, 0, 0);
   controller.speed = 120;            // re-derived into velocity next controller.update
-  showToast('CRASHED — RECOVERING');
+  _crashCooldown = 1.2;              // brief grace so we don't instantly re-crash
 }
 
 // =====================================================
@@ -934,24 +965,40 @@ function updateWaypoint() {
 // Advance the simulation by one fixed step. Extracted so headless tests can
 // drive the game deterministically without depending on rAF timing.
 function simulate(dt) {
-  controller.update(dt, input.read());
-  // Advance onboarding coach (sim runs under the overlay)
-  if (onboardingActive) _tickOnboardCoach();
+  // Death-cam: while the wreck burns, freeze the plane, hold the camera on the fireball,
+  // and roll secondary bursts — no flight, no ground-check (the plane is buried at the
+  // impact point → it would re-crash). respawnCrash() lifts us clear when the hold ends.
+  if (_crashFreeze > 0) {
+    _crashFreeze -= dt;
+    _crashBurst -= dt;
+    if (_crashBurst <= 0) {
+      _crashBurst = 0.11;
+      _crashJitter.set((Math.random() - 0.5) * 16, (Math.random() - 0.2) * 12, (Math.random() - 0.5) * 16).add(_crashPos);
+      fx.explosion(_crashJitter, 1.4);
+    }
+    if (_crashFreeze <= 0) respawnCrash();
+  } else {
+    controller.update(dt, input.read());
+    // Advance onboarding coach (sim runs under the overlay)
+    if (onboardingActive) _tickOnboardCoach();
 
-  // Terrain collision — the ground can kill you now (soft-floor removed).
-  // Cooldown prevents re-triggering every frame while the respawn lifts us clear.
-  if (_crashCooldown > 0) _crashCooldown -= dt;
-  const ground = terrainHeight(plane.position.x, plane.position.z);
-  if (_crashCooldown <= 0 && plane.position.y < ground + CRASH_MARGIN) crash();
-  // Soft world bounds
-  const lim = WORLD_SIZE * 0.45;
-  plane.position.x = Math.max(-lim, Math.min(lim, plane.position.x));
-  plane.position.z = Math.max(-lim, Math.min(lim, plane.position.z));
+    // Terrain collision — the ground can kill you now (soft-floor removed).
+    // Cooldown prevents re-triggering every frame while the respawn lifts us clear.
+    if (_crashCooldown > 0) _crashCooldown -= dt;
+    const ground = terrainHeight(plane.position.x, plane.position.z);
+    if (_crashCooldown <= 0 && plane.position.y < ground + CRASH_MARGIN) crash();
+    // Soft world bounds
+    const lim = WORLD_SIZE * 0.45;
+    plane.position.x = Math.max(-lim, Math.min(lim, plane.position.x));
+    plane.position.z = Math.max(-lim, Math.min(lim, plane.position.z));
+  }
 
   if (activeMinigame) {
     activeMinigame.update(dt);
     if (activeMinigame.done) endMinigame();
-  } else {
+  } else if (_crashFreeze <= 0) {
+    // No mission auto-entry mid death-cam: the wreck is buried near the ground and
+    // would proximity-trigger a minigame before respawnCrash() lifts us clear.
     checkMissions();
   }
 
@@ -1022,7 +1069,7 @@ function simulate(dt) {
   // Exhaust plume — proportional to throttle at all times (boost = full intensity).
   // Uses pre-allocated scratch vectors to avoid per-frame alloc in hot path.
   const exhaustIntensity = controller.boosting ? 1.0 : controller.throttle * 0.4;
-  if (exhaustIntensity > 0.05) {
+  if (exhaustIntensity > 0.05 && _crashFreeze <= 0) {
     _exhFwd.set(0, 0, 1).applyQuaternion(plane.quaternion);
     _exhPos.copy(plane.position).addScaledVector(_exhFwd, -5);
     _exhBack.copy(_exhFwd).multiplyScalar(-26);
@@ -1134,6 +1181,8 @@ function startGame() {
   controller.reset(new THREE.Vector3(0, 400, 0));
   totalScore = 0;
   _crashCooldown = 0;   // clear any cooldown left armed by a crash in a prior session
+  _crashFreeze = 0;     // clear any death-cam left mid-hold; make sure the jet is visible
+  plane.visible = true;
 
   // Recycle ambient traffic for a fresh session (reset positions), like the trail.
   if (traffic) traffic.dispose();
@@ -1169,6 +1218,7 @@ function togglePause() {
 }
 
 function quitToMenu() {
+  _crashFreeze = 0; plane.visible = true;   // never leave the jet hidden after a mid-death quit
   if (activeMinigame) { activeMinigame.cleanup(); activeMinigame = null; }
   if (traffic) { traffic.dispose(); traffic = null; }
   if (_trail) { _trail.dispose(); _trail = null; }
@@ -1437,6 +1487,7 @@ window.__sky = {
   get controller() { return controller; },
   get missions() { return missions; },
   get crashCount() { return _crashCount; },
+  get crashFreeze() { return _crashFreeze; },   // >0 while the death-cam is holding on the wreck
   get buzzCount() { return _buzzCount; },
   get lastResult() { return _lastResult; },   // { reason, win, completed } — guards landmine #1
   get traffic() { return traffic; },
