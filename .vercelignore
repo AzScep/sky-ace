@@ -1,0 +1,21 @@
+# Dev/test artifacts — not needed to run the game in the browser
+node_modules/
+tests/
+test-results/
+playwright-report/
+playwright.config.js
+
+# Agent/workflow scaffolding
+.claude/
+docs/
+
+# Project docs (not served)
+CLAUDE.md
+IMPROVEMENTS.md
+POLISH.md
+UX.md
+README.md
+
+# OS cruft
+.DS_Store
+*.log
