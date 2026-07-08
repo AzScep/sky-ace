@@ -148,6 +148,11 @@ function setupScene() {
   // and glow needs darkness.
   renderer.toneMapping = THREE.ReinhardToneMapping;
   renderer.toneMappingExposure = 0.75;
+  // Grounding cue is a contact-blob shadow (world.js updateShadow) that rides under the
+  // plane and scales/fades with altitude — one draw call, always readable when the ground
+  // is in frame (low passes, canyon runs, takeoff). A full directional shadow-map was
+  // trialled but only reads in that same low-altitude window while costing ~110 draw calls
+  // against the 500 budget, so the cheap blob wins for an arcade flight cam.
 
   world = buildWorld(scene);
   fx = new FX(scene);
@@ -222,6 +227,8 @@ function renderFrame() {
   if (world.skyDome) world.skyDome.position.copy(camera.position);
   if (world.dayDome) world.dayDome.position.copy(camera.position);
   if (world.stars) world.stars.position.copy(camera.position);
+  // Ride the contact-shadow blob under the plane (grounding / altitude cue).
+  if (world.updateShadow && plane) world.updateShadow(plane.position);
   if (useBloom && composer) composer.render();
   else renderer.render(scene, camera);
 }

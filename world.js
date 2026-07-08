@@ -253,6 +253,37 @@ export function buildWorld(scene) {
   const hemi = new THREE.HemisphereLight(0x88aacc, 0x3a5a3a, 0.4);
   scene.add(hemi);
 
+  // ----- CONTACT (BLOB) SHADOW -----
+  // Grounding cue for the aircraft: a soft dark ellipse that rides the ground directly
+  // under the plane and scales/fades with altitude — the "how high am I / where over the
+  // world" read. One draw call, driven each frame by updateShadow(). A true directional
+  // shadow-map was trialled but only reads in the same low-altitude window (chase cam
+  // looks at the horizon, so the ground under the plane is off-screen in level cruise)
+  // while costing ~110 draw calls, so the cheap blob wins. Radial-gradient sprite = soft edge.
+  const _blobCanvas = document.createElement('canvas');
+  _blobCanvas.width = _blobCanvas.height = 128;
+  {
+    const bx = _blobCanvas.getContext('2d');
+    const g = bx.createRadialGradient(64, 64, 4, 64, 64, 62);
+    g.addColorStop(0.0, 'rgba(0,0,0,0.62)');
+    g.addColorStop(0.55, 'rgba(0,0,0,0.34)');
+    g.addColorStop(1.0, 'rgba(0,0,0,0.0)');
+    bx.fillStyle = g;
+    bx.fillRect(0, 0, 128, 128);
+  }
+  const blobTex = new THREE.CanvasTexture(_blobCanvas);
+  blobTex.colorSpace = THREE.SRGBColorSpace;
+  const blobMat = new THREE.MeshBasicMaterial({
+    map: blobTex, transparent: true, opacity: 0, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, fog: true,
+  });
+  const blobGeo = new THREE.PlaneGeometry(1, 1);
+  blobGeo.rotateX(-Math.PI / 2);       // lie flat on the ground
+  const blobShadow = new THREE.Mesh(blobGeo, blobMat);
+  blobShadow.renderOrder = 2;          // draw over the terrain, under FX
+  blobShadow.matrixAutoUpdate = true;
+  scene.add(blobShadow);
+
   // ----- TERRAIN -----
   const segs = 220;
   const terrainGeo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, segs, segs);
@@ -475,6 +506,9 @@ export function buildWorld(scene) {
   // per-frame-alloc-free, so it's safe to call every frame.
   const ELEV_MAX = 42;   // real daytime sun (clear blue day); dusk/night still moody near the horizon
   const _sunDir = new THREE.Vector3();
+  // Contact-blob strength gate: full by day, faded out at night (no sun → no shadow).
+  // setTimeOfDay drives it with the day factor; setLook pins it (neon look = always lit).
+  let dayShadowStrength = 1;
   const _colDay = new THREE.Color(0xfff2d8);      // noon key light (warm white)
   const _colDusk = new THREE.Color(0xff8a4a);     // low-sun warmth
   const _colNightAmb = new THREE.Color(0x24304a);
@@ -500,6 +534,7 @@ export function buildWorld(scene) {
     ambient.intensity = 0.14 + 0.28 * day;
     ambient.color.copy(_colNightAmb).lerp(_colDayAmb, day);
     hemi.intensity = 0.08 + 0.22 * day;
+    dayShadowStrength = day;   // contact blob fades with the sun — none at night
     _fog.copy(_hazeNight).lerp(_hazeDay, day).lerp(_hazeDusk, gold * 0.6);
     scene.fog.color.copy(_fog);
     // Crisp/clear by day (fog pushed out past the view), hazy/moody at dusk & night.
@@ -531,6 +566,7 @@ export function buildWorld(scene) {
       // state the neon look expects, else toggling to synthwave inherits stale realistic (e.g.
       // night → near-black) state on these shared handles.
       dir.intensity = 1.1; dir.color.set(0xfff0d8); dir.position.set(2000, 1400, -2500);
+      dayShadowStrength = 1;                           // neon look is always "lit" — full blob
       ambient.intensity = 0.55; ambient.color.set(0xb0c8e0);
       hemi.intensity = 0.4;
       sun.position.set(2000, 1400, -2500);
@@ -550,7 +586,25 @@ export function buildWorld(scene) {
     return { clearColor: REALISTIC_HAZE, bloomStrength: 0.6, exposure: 0.75 };
   }
 
-  return { terrain, water, clouds, sun, skyDome, dayDome, stars, setLook, setTimeOfDay };
+  // Contact blob: altitude cue directly under the plane. Grows and fades with height —
+  // tight & dark on the deck, wide & faint up high, gone at ceiling. Reads whenever the
+  // ground is in frame (low passes, canyon runs, takeoff); at high level cruise the chase
+  // cam looks at the horizon so the ground patch sits off-screen, which is expected.
+  function updateShadow(planePos) {
+    if (!planePos) return;
+    const gy = terrainHeight(planePos.x, planePos.z);
+    const alt = Math.max(0, planePos.y - gy);
+    const t = THREE.MathUtils.clamp(alt / 1400, 0, 1);          // 0 on deck .. 1 near ceiling
+    const size = THREE.MathUtils.lerp(120, 380, t);             // wider the higher you fly
+    blobShadow.position.set(planePos.x, gy + 3, planePos.z);    // +3 to sit above terrain z-fight
+    blobShadow.scale.set(size, 1, size);
+    // Stay readable across the altitude band: strong on the deck, still clearly present
+    // up high (the day gate only softens it toward dusk, never erases it in daylight).
+    blobShadow.material.opacity = THREE.MathUtils.lerp(0.7, 0.28, t) * dayShadowStrength;
+    blobShadow.visible = blobShadow.material.opacity > 0.02;
+  }
+
+  return { terrain, water, clouds, sun, skyDome, dayDome, stars, setLook, setTimeOfDay, updateShadow };
 }
 
 // ----- Mission marker (large pillar of light) -----
