@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/azscep/Development Project/command-center/TASTE.md)",
+      "Read(//Users/azscep/Development Project/command-center/apex/**)",
+      "Read(//Users/azscep/.claude/CLAUDE.md)"
+    ]
+  }
+}
