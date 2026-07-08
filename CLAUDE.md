@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**Sky Ace** — a browser-based 3D flight simulator (Three.js) with an open world, four
-minigames, and a localStorage leaderboard. Neon-synthwave / OUTRUN art style.
+**Sky Ace** — a browser-based 3D flight simulator (Three.js) with an open world, five
+minigames (Ring Run, Canyon Dash, Precision Drop, Dogfight, Flux Run), and a localStorage
+leaderboard. Neon-synthwave / OUTRUN art style.
 
 ## No build step
 
@@ -101,9 +102,11 @@ These are encoded in regression tests; breaking them re-breaks shipped fixes.
   `±(WORLD_SIZE * 0.45)`. Any minigame course element placed beyond that wall is physically
   unreachable. `minigames.js` currently keeps Ring Run and Canyon Dash courses inside an
   inline `const BOUND = WORLD_SIZE * 0.42` clamp (there is no shared `COURSE_BOUND` or
-  `keepInBounds()` helper in the live code). Also raise course elements to at least
-  `terrainHeight(x,z) + ~120` or they bury inside mountain peaks (the soft-floor then lifts
-  the plane above them). Covered by `tests/regression.spec.js` + `tests/minigames.spec.js`.
+  `keepInBounds()` helper in the live code; Flux Run has its own clamp too). Airborne course
+  elements sit at `terrainHeight(x,z) + 130…150` in live code (Ring Run +130, Flux Run
+  +150–400; Canyon Dash deliberately lower, ground targets at +0) or they bury inside
+  mountain peaks (the soft-floor then lifts the plane above them). Covered by
+  `tests/regression.spec.js` + `tests/minigames.spec.js`.
 - **Gate flight keys behind `isFlying()`.** Camera/reset/fire callbacks must do nothing in
   menus/result screens. They are wired in `setupScene()` behind an `isFlying()` check.
 - **No per-frame allocations in hot paths** (`PlaneController.update`, `updateCamera`,

@@ -12,7 +12,7 @@ import { buildWorld, createMissionMarker, terrainHeight, WORLD_SIZE, REALISTIC_H
 import { createPlane, PlaneController, Input } from './plane.js?v=12';
 import { RingRun, CanyonDash, PrecisionDrop, Dogfight, FluxRun } from './minigames.js?v=12';
 import { addScore, getScores, getOverall, clearAll, MODES, formatDate, gradeFor } from './leaderboard.js?v=12';
-import { audio } from './audio.js?v=12';
+import { audio } from './audio.js?v=13';
 import { FX } from './fx.js?v=12';
 import * as progression from './progression.js?v=12';
 import { Traffic } from './traffic.js?v=12';
@@ -1004,6 +1004,7 @@ function simulate(dt) {
       _crashBurst = 0.11;
       _crashJitter.set((Math.random() - 0.5) * 16, (Math.random() - 0.2) * 12, (Math.random() - 0.5) * 16).add(_crashPos);
       fx.explosion(_crashJitter, 1.4);
+      audio.play('explosion', { rate: 0.9 + Math.random() * 0.2, gain: 0.4 });
     }
     if (_crashFreeze <= 0) respawnCrash();
   } else {

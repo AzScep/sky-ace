@@ -166,3 +166,41 @@ test('[CRASH] resuming free flight after a crash lands clear of terrain (no inst
   expect(out.crashDelta).toBe(0);         // no instant re-crash on resume
   assertNoErrors(errors, 'Errors during crash-resume test');
 });
+
+test('[CRASH] death-cam explosion bursts are audible, not just visual (audio.js ?v=13)', async ({ page }) => {
+  // Regression: crash() plays one 'explosion' one-shot at impact, but the ~0.9s
+  // (CRASH_FREEZE, game.js ~L86) death-cam freeze fires ~8 secondary visual
+  // fx.explosion() bursts every _crashBurst=0.11s (game.js ~L1000-1008) that used to
+  // be silent. The fix adds a matching audio.play('explosion', {rate, gain: 0.4})
+  // next to each visual burst. playCounts (audio.js) tallies real play() calls, but
+  // only once the clip's buffer is decoded — audio.init() is kicked off by
+  // startGame() (a user gesture proxy in tests), so wait for audio.ready before
+  // driving the crash or the tally would never move and the test would be vacuous.
+  const errors = captureErrors(page);
+  await boot(page);
+  await startMission(page);
+  await page.waitForFunction(() => window.__sky.audio.ready, null, { timeout: 15_000 });
+
+  const out = await page.evaluate(() => {
+    const sky = window.__sky;
+    const p = sky.plane.position;
+    sky.plane.quaternion.identity();
+    sky.controller.speed = 80;
+    p.y = sky.terrainHeight(p.x, p.z) - 50;
+    sky.tick(1 / 60);                          // crash → impact boom (play #1) + freeze begins
+    const afterImpact = sky.audio.playCounts.explosion || 0;
+    // Tick through the whole death-cam hold in small steps so every ~0.11s burst lands.
+    for (let i = 0; i < 120 && sky.crashFreeze > 0; i++) sky.tick(1 / 60);
+    const afterFreeze = sky.audio.playCounts.explosion || 0;
+    return { afterImpact, afterFreeze, crashCount: sky.crashCount };
+  });
+
+  expect(out.crashCount).toBe(1);
+  expect(out.afterImpact).toBeGreaterThanOrEqual(1);  // the impact boom itself played
+  // CRASH_FREEZE=0.9s / _crashBurst period 0.11s → ~8 bursts fire (first is immediate since
+  // _crashBurst starts at 0). Assert a floor of 3 rather than the exact count: dt-step
+  // quantization at 1/60s can shift the last burst or two across the freeze-end boundary,
+  // but a real fix must clear "more than a couple" bursts beyond the single impact boom.
+  expect(out.afterFreeze - out.afterImpact).toBeGreaterThanOrEqual(3);
+  assertNoErrors(errors, 'Errors during death-cam audio test');
+});

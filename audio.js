@@ -36,6 +36,7 @@ class AudioManager {
   constructor() {
     this.ctx = null;
     this.buffers = {};
+    this.playCounts = {};    // clip name -> number of play() calls (deaf-CI test hook)
     this.ready = false;
     this.muted = false;
     this.volume = 1;          // user master volume (0..1), driven by settings
@@ -132,6 +133,7 @@ class AudioManager {
     if (!this.ready || !this.ctx) return;
     const def = FILES[name], buf = this.buffers[name];
     if (!buf) return;
+    this.playCounts[name] = (this.playCounts[name] || 0) + 1;
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.playbackRate.value = opts.rate || 1;
